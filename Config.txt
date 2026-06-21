@@ -1,0 +1,130 @@
+# ==============================================================================
+# RHS Group Ltd — Supplier Price Update / Create Configuration
+# ==============================================================================
+# (This is the Config.txt for the Update-from-Price-Files script, not Align Prices.)
+# Edit these settings before each run.
+# Lines starting with # are comments and are ignored.
+# Format: Key: Value
+# ==============================================================================
+
+# Set to False to apply live changes (True = preview only, no changes made)
+DRY_RUN: False
+
+# API calls per minute — stay below 60 to leave headroom for Zapier workflows
+RATE_LIMIT_PER_MIN: 55
+
+# --- What to update ---
+UPDATE_CIN7: True
+UPDATE_SIMPRO: True
+UPDATE_SHOPIFY: False
+
+# Exclude "Bathroom Brands" to avoid accidentally running 72k products
+# (applied in uplift mode; matched against both Brand and Category, case-insensitive)
+EXCLUDE_BATHROOM_BRANDS: False
+
+# --- Filters ---
+# Used to scope UPLIFT_MODE (below). File mode ignores these.
+# Leave blank to process all brands / all categories.
+# Examples:
+# BRAND_FILTER: EPH Controls
+# CATEGORY_FILTER: Heating Controls
+BRAND_FILTER: Tissino
+CATEGORY_FILTER: 
+
+# --- Attribute updates (Barcode/GTIN etc. from the price file) ---
+# How file attributes are applied when Cin7 already has a value:
+#   overwrite  = the file always wins (file is the source of truth)
+#   fill_blank = only set the attribute when Cin7's existing value is empty
+ATTRIBUTE_FILL_MODE: overwrite
+
+# --- Zapier safety prompt ---
+# Before any LIVE run, prompt to confirm the sync Zap(s) are turned OFF so a bulk
+# update doesn't fire single-update Zaps for every changed product.
+# Set ZAP_PAUSE_PROMPT: False to skip it. ZAP_NAME just labels the prompt.
+ZAP_PAUSE_PROMPT: True
+ZAP_NAME: Cin7 sync Zap(s)
+
+# ==============================================================================
+# --- Manufacturer uplift mode ---
+# ==============================================================================
+# When UPLIFT_MODE is True, the script does NOT read a price file. Instead it
+# finds every product matching BRAND_FILTER / CATEGORY_FILTER above and lifts
+# each one's existing Tier10 anchor by UPLIFT_PERCENT, recomputing all tiers,
+# simPRO and Shopify prices from the new anchor.
+#
+# Safety: refuses to run if BOTH filters are blank; a live run shows a
+# pre-flight summary (including the product count) and requires you to type
+# CONFIRM, on top of the usual business-hours check.
+#
+# Always run with DRY_RUN: True first to preview the count and the changes.
+
+UPLIFT_MODE: True
+UPLIFT_GUARD: True
+UPLIFT_DEFAULT_SUPPLIER: 
+
+# Percentage to add (e.g. 5 = +5%)
+UPLIFT_PERCENT: 7
+
+# False = move selling prices only, hold the supplier (buy) cost until you have
+#         the real price file  [recommended default]
+# True  = also raise the supplier cost by the same %, treating the announced
+#         increase as the true cost change
+UPLIFT_SUPPLIER_COST: False
+
+# Cin7 ignores Brand/Category filters on its product endpoint, so the whole
+# catalogue is scanned once (~2-3 min) and cached to catalogue_index.json, then
+# filtered locally. The cache rebuilds automatically once it is older than
+# CATALOGUE_MAX_AGE_HOURS, so there is nothing to manage by hand day to day.
+CATALOGUE_MAX_AGE_HOURS: 24
+
+# Force a rebuild on the next run regardless of age (e.g. right after adding new
+# products you want included straight away). No need to reset it — it only forces
+# the next run.
+REFRESH_CATALOGUE: False
+
+# ==============================================================================
+# --- Create missing products (Phase 2) ---
+# ==============================================================================
+# When CREATE_MISSING is True (file mode only), any SKU in the price file that is
+# NOT found in Cin7 is CREATED instead of erroring. Left False for now so nothing
+# changes until you turn it on. When you do:
+#   1) run DRY_RUN: True first — you'll see a "[DRY RUN] CREATE ..." line per new
+#      SKU and an estimated update/create split before anything is written;
+#   2) the new product takes its boilerplate from the NEW_PRODUCT_* values below;
+#   3) per-row Category / Brand / Barcode / CostingMethod / Discount / Supplier can
+#      be added as columns in the price file and override the defaults below.
+# Category is REQUIRED for a create — supply a column or set a default below.
+CREATE_MISSING: False
+
+# Boilerplate for every new product (same for basically everything you stock):
+NEW_PRODUCT_TYPE: Stock
+NEW_PRODUCT_COSTING_METHOD: FIFO
+NEW_PRODUCT_UOM: Each
+NEW_PRODUCT_LOCATION: Warehouse
+NEW_PRODUCT_INVENTORY_ACCOUNT: 300
+NEW_PRODUCT_COGS_ACCOUNT: 310
+NEW_PRODUCT_REVENUE_ACCOUNT: 240
+NEW_PRODUCT_PURCHASE_TAX_RULE: 20% (VAT on Expenses)
+NEW_PRODUCT_SALE_TAX_RULE: 20% (VAT on Income)
+NEW_PRODUCT_ATTRIBUTE_SET: Product Details
+NEW_PRODUCT_MULTIPLIER: 2
+NEW_PRODUCT_DROPSHIP: No Drop Ship
+
+# Fallbacks used only when a file row leaves these blank.
+# (Boilers/filters that need serial tracking: put "Serial" in a CostingMethod
+#  column on those rows — it maps to "FIFO - Serial Number".)
+NEW_PRODUCT_DEFAULT_CATEGORY: Bathroom Brands
+NEW_PRODUCT_DEFAULT_BRAND: Merlyn
+
+# Optional: attach the file Cost to this supplier on new products. Blank = create
+# with correct selling prices but NO supplier-cost row (add via your PO process).
+# Must be an existing Cin7 supplier name. A "Supplier" column overrides per row.
+NEW_PRODUCT_SUPPLIER: Merlyn Industries Limited
+
+# ==============================================================================
+# --- Phase 3: deprecate discontinued products (off by default) ---
+# ==============================================================================
+DEPRECATE_MODE: False
+DEPRECATE_STATUS: Deprecated
+DEPRECATE_HOLD_ON_ORDER: True
+DEPRECATE_DISPLAY_LIMIT: 200

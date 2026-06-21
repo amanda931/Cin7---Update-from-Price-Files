@@ -1,0 +1,13 @@
+# Logs and runtime output
+Logs/
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Input data — supplier price file changes constantly
+*.csv
+
+# Safety net — never commit credentials, even a stray local copy
+Credentials.txt

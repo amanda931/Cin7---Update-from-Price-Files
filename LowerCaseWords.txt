@@ -1,0 +1,36 @@
+# ==============================================================================
+# RHS Group Ltd — LowerCaseWords.txt
+# ==============================================================================
+# Connector / preposition words that should always appear in lower case
+# when they appear mid-name (not at the start). One entry per line.
+# Lines starting with # are comments.
+# Case of entries here doesn't matter — they are always matched/stored in lower case.
+# ==============================================================================
+
+# --- Articles ---
+a
+an
+the
+
+# --- Conjunctions ---
+and
+or
+but
+for
+nor
+
+# --- Prepositions ---
+at
+by
+in
+of
+on
+to
+up
+as
+with
+from
+into
+onto
+than
+that

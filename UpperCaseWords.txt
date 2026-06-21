@@ -1,0 +1,90 @@
+# ==============================================================================
+# RHS Group Ltd — UpperCaseWords.txt
+# ==============================================================================
+# Product code acronyms and abbreviations that should always appear in UPPER CASE
+# in product names. One entry per line. Lines starting with # are comments.
+# Case of entries here doesn't matter — they are always matched/stored in UPPER CASE.
+# ==============================================================================
+
+# --- Electrical / General ---
+AC
+DC
+LED
+LCD
+UV
+
+# --- Pipe / Fitting standards ---
+BSP
+BSPT
+BSPP
+PVC
+ABS
+PTFE
+EPDM
+NBR
+DZR
+
+# --- Certifications / Standards ---
+WRAS
+BS
+EN
+CE
+UKCA
+BEAB
+DIN
+ISO
+PPE
+FSC
+PEFC
+
+# --- Heating / Controls ---
+RF
+TRV
+PRV
+TMV
+UFH
+LPG
+IP
+IPX
+MCB
+RCD
+RCBO
+CO
+CO2
+ERP
+ERP2
+ERP3
+HP
+LP
+
+# --- Building / Materials ---
+MDF
+HDF
+MFC
+RAL
+T&G
+
+# --- RHS / EPH specific ---
+IMC
+FF+
+RFC
+RFR
+HPV
+RDT
+WRP
+PCB
+EPH
+
+# --- Misc ---
+TDS
+SDS
+
+# --- Merlyn / Arysto shower enclosures (finishes & ranges) ---
+# MB = Matt Black, BBR = Brushed Brass, BGM = Brushed Gun Metal,
+# BN = Brushed Nickel, IQ = range name, W/R = Wetroom
+MB
+BBR
+BGM
+BN
+IQ
+W/R
