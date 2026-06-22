@@ -174,6 +174,15 @@ CATALOGUE_MAX_AGE_HOURS = int(_parse_decimal(_cfg.get("CATALOGUE_MAX_AGE_HOURS",
 UPLIFT_GUARD            = _parse_bool(_cfg.get("UPLIFT_GUARD", "True"))
 UPLIFT_DEFAULT_SUPPLIER = _cfg.get("UPLIFT_DEFAULT_SUPPLIER", "").strip()
 
+# Tier audit (--audit) tolerance: a product is only flagged when a tier differs
+# from its expected value by BOTH of these — at least AUDIT_TOLERANCE_PERCENT of the
+# expected price AND at least AUDIT_TOLERANCE_PENCE in absolute terms. The percent
+# stops penny rounding on dear products being flagged; the pence floor stops a 1p
+# rounding wobble on a sub-£1 product (where 1p is already >1%) slipping through.
+# Genuine drift clears both bars easily.
+AUDIT_TOLERANCE_PERCENT = _parse_decimal(_cfg.get("AUDIT_TOLERANCE_PERCENT", "1"), "1")
+AUDIT_TOLERANCE_PENCE   = _parse_decimal(_cfg.get("AUDIT_TOLERANCE_PENCE", "2"), "2")
+
 # How file attributes (Barcode etc.) are applied when Cin7 already has a value:
 #   overwrite  = the file always wins (file is the source of truth)  [default]
 #   fill_blank = only set the attribute when Cin7's existing value is empty
@@ -956,6 +965,278 @@ def classify_uplift_targets(rows, pricing, default_supplier):
             skipped.append((sku, name, expected, actual))
         # else: at or below basis -> fine to uplift -> not recorded
     return skipped, unchecked
+
+
+def cin7_fetch_full_pricing(wanted_skus=None, page_limit=1000):
+    """
+    Page the full catalogue WITH suppliers and capture what the tier audit needs:
+    SKU, Name, Brand, all PriceTier1-10, AdditionalAttribute2, and the supplier rows
+    (name + cost). If `wanted_skus` is a set, only those SKUs are kept and paging
+    stops once all are found; otherwise every product is kept. Read-only — fires no
+    Zapier workflows. Returns a list of dicts.
+    """
+    wanted = None
+    if wanted_skus is not None:
+        wanted = {(s or "").strip() for s in wanted_skus if (s or "").strip()}
+        if not wanted:
+            return []
+    out, page, total = [], 1, None
+    while True:
+        rate_limiter.wait()
+        r = requests.get(CIN7_PRODUCT_URL, headers=cin7_headers,
+                         params={"Page": page, "Limit": page_limit,
+                                 "IncludeSuppliers": "true"}, timeout=60)
+        if not (200 <= r.status_code < 300):
+            raise ValueError(f"Cin7 product list (audit) failed (page {page}): "
+                             f"{r.status_code} - {r.text[:300]}")
+        body = r.json()
+        if isinstance(body, dict):
+            products = body.get("Products", []) or []
+            total    = body.get("Total", total)
+        elif isinstance(body, list):
+            products = body
+        else:
+            products = []
+        if not products:
+            break
+        for p in products:
+            sku = clean(p.get("SKU", "")).strip()
+            if wanted is not None and sku not in wanted:
+                continue
+            suppliers = []
+            for s in (p.get("Suppliers") or []):
+                if not isinstance(s, dict):
+                    continue
+                c = s.get("Cost")
+                suppliers.append({
+                    "name": clean(s.get("SupplierName", "")).strip(),
+                    "cost": (money(to_decimal_safe(c, "0")) if c not in (None, "") else None),
+                })
+            tiers = {}
+            for n in range(1, 11):
+                v = p.get(f"PriceTier{n}")
+                tiers[n] = money(to_decimal_safe(v, "0")) if v not in (None, "") else None
+            out.append({
+                "sku":       sku,
+                "name":      clean(p.get("Name", "")).strip(),
+                "brand":     clean(p.get("Brand", "")).strip(),
+                "mult_raw":  p.get("AdditionalAttribute2", ""),
+                "tiers":     tiers,
+                "suppliers": suppliers,
+            })
+        print(f"  [audit] scanned page {page}, kept {len(out)}...", end="\r")
+        if wanted is not None and len({o["sku"] for o in out} & wanted) >= len(wanted):
+            break
+        if total is not None and page * page_limit >= int(total):
+            break
+        if len(products) < page_limit:
+            break
+        page += 1
+    print(f"  [audit] fetched {len(out)} products." + " " * 20)
+    return out
+
+
+def _audit_expected_ladder(expected_tier10):
+    """Full expected ladder (Tiers 1-10 as Decimals) from a Tier10, using the exact
+    helpers the updater uses so the audit can't drift from live pricing."""
+    return {
+        1:  price_from_double_plus(expected_tier10, 1),
+        2:  price_from_double_plus(expected_tier10, 2),
+        3:  price_from_double_plus(expected_tier10, 3),
+        4:  price_from_double_plus(expected_tier10, 5),
+        5:  price_from_double_plus(expected_tier10, 7.5),
+        6:  price_from_margin(expected_tier10, 40),
+        7:  price_from_margin(expected_tier10, 30),
+        8:  price_from_margin(expected_tier10, 20),
+        9:  price_from_margin(expected_tier10, 10),
+        10: money(expected_tier10),
+    }
+
+
+def _audit_one(p, tol_percent=Decimal("1"), tol_pence=Decimal("2")):
+    """Classify one fetched product against the expected ladder built from its stored
+    supplier cost (highest-priced supplier), ratchet included. A tier counts as off
+    only when the gap is BOTH >= tol_percent of the expected price AND >= tol_pence
+    (in pence) absolute, so penny rounding never trips it. Returns (status, row):
+      ("no_supplier", None) | ("ok", None) | ("mismatch", row_dict)."""
+    suppliers = [s for s in p["suppliers"] if s.get("cost") and s["cost"] > 0]
+    if not suppliers:
+        return ("no_supplier", None)
+    basis = max(suppliers, key=lambda s: s["cost"])
+    cost  = basis["cost"]
+    mult  = to_decimal_safe(p["mult_raw"], "2")
+    if mult < Decimal("2"):
+        mult = Decimal("2")
+    stored   = p["tiers"]
+    stored10 = stored.get(10) if stored.get(10) is not None else Decimal("0")
+    proposed10 = money(cost * mult / Decimal("2"))
+    expected10 = max(cost, stored10, proposed10)
+    exp = _audit_expected_ladder(expected10)
+
+    pct_frac  = tol_percent / Decimal("100")
+    abs_floor = tol_pence / Decimal("100")     # pence -> pounds
+    offs = []
+    for n in range(1, 11):
+        act = stored.get(n)
+        act = act if act is not None else Decimal("0")
+        gap = abs(exp[n] - act)
+        if gap >= (exp[n] * pct_frac) and gap >= abs_floor:
+            offs.append(n)
+    if not offs:
+        return ("ok", None)
+
+    # Is Tier10 itself materially low (same two-bar test)?
+    t10_gap  = expected10 - stored10
+    t10_low  = (t10_gap >= (expected10 * pct_frac)) and (t10_gap >= abs_floor)
+    if stored10 <= 0:
+        status = "Unpriced"      # no fixed tiers (likely still on old markup method)
+    elif t10_low:
+        status = "UnderPriced"   # Tier10 set but materially below cost basis
+    else:
+        status = "Drift"         # Tier10 ~correct, but tiers 1-9 don't match it
+    row = {
+        "SKU": p["sku"], "Name": p["name"], "Brand": p["brand"], "Status": status,
+        "Supplier": basis["name"], "SupplierCost": to_float(cost),
+        "Multiplier": format_decimal_clean(mult),
+        "ExpTier10": to_float(exp[10]), "ActTier10": to_float(stored10),
+        "Tier10TooLow": "yes" if t10_low else "no",
+        "TiersOffCount": len(offs),
+        "TiersOff": ",".join(f"T{n}" for n in offs),
+    }
+    for n in range(1, 11):
+        act = stored.get(n)
+        row[f"Exp_T{n}"] = to_float(exp[n])
+        row[f"Act_T{n}"] = to_float(act if act is not None else Decimal("0"))
+    return ("mismatch", row)
+
+
+def run_audit_mode():
+    """
+    READ-ONLY tier audit. For every in-scope product that has a supplier, recompute
+    the expected price ladder from its stored supplier cost (highest-priced supplier),
+    applying the same ratchet and tier formulas as a live re-price, and compare against
+    the stored tiers. Writes a CSV of the mismatches. Makes NO changes.
+    """
+    print("=" * 60)
+    print("RHS Group Ltd — Tier Audit (READ-ONLY, no changes made)")
+    print("=" * 60)
+    print(f"  Tolerance: flag a tier only if it is off by >= "
+          f"{format_decimal_clean(AUDIT_TOLERANCE_PERCENT)}% AND "
+          f">= {format_decimal_clean(AUDIT_TOLERANCE_PENCE)}p")
+
+    scope_bits = []
+    if BRAND_FILTER:    scope_bits.append(f"Brand='{BRAND_FILTER}'")
+    if CATEGORY_FILTER: scope_bits.append(f"Category='{CATEGORY_FILTER}'")
+    scope_str = " + ".join(scope_bits) if scope_bits else "WHOLE CATALOGUE"
+    print(f"  Scope: {scope_str}")
+
+    wanted = None
+    if BRAND_FILTER or CATEGORY_FILTER:
+        index, _gen = load_catalogue_index(
+            refresh=REFRESH_CATALOGUE, max_age_hours=CATALOGUE_MAX_AGE_HOURS)
+        matched, _br, _cats = filter_catalogue(
+            index, brand=BRAND_FILTER, category=CATEGORY_FILTER,
+            exclude_bathroom_brands=EXCLUDE_BATHROOM_BRANDS)
+        wanted = {sku for (sku, _n) in matched}
+        print(f"  {len(wanted)} product(s) in scope.")
+        if not wanted:
+            print("  Nothing in scope — check BRAND_FILTER / CATEGORY_FILTER.")
+            return
+
+    print("  Fetching current prices (read-only scan; ~7 min for the whole catalogue)...")
+    try:
+        products = cin7_fetch_full_pricing(wanted)
+    except Exception as e:
+        print(f"\n  ERROR: price fetch failed ({e}).")
+        return
+
+    skip_unpriced = "priced" in [a.lower() for a in sys.argv[2:]]
+    checked = no_supplier = excluded = mismatched = 0
+    n_unpriced = n_underpriced = n_drift = unpriced_hidden = 0
+    rows_out = []
+    for p in products:
+        if (EXCLUDE_BATHROOM_BRANDS and wanted is None
+                and p["brand"].strip().lower() == "bathroom brands"):
+            excluded += 1
+            continue
+        status, row = _audit_one(p, AUDIT_TOLERANCE_PERCENT, AUDIT_TOLERANCE_PENCE)
+        if status == "no_supplier":
+            no_supplier += 1
+            continue
+        checked += 1
+        if status == "ok":
+            continue
+        mismatched += 1
+        st = row["Status"]
+        if st == "Unpriced":
+            n_unpriced += 1
+        elif st == "UnderPriced":
+            n_underpriced += 1
+        else:
+            n_drift += 1
+        if skip_unpriced and st == "Unpriced":
+            unpriced_hidden += 1
+            continue
+        rows_out.append(row)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(SCRIPT_DIR, "Logs")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"tier_audit_{ts}.csv")
+    fix_path = os.path.join(SCRIPT_DIR, f"audit_fix_{ts}.csv")
+    if rows_out:
+        order = {"UnderPriced": 0, "Drift": 1, "Unpriced": 2}
+        rows_out.sort(key=lambda r: (order.get(r["Status"], 9), r["Brand"],
+                                     -(r["ExpTier10"] - r["ActTier10"])))
+        cols = (["SKU", "Name", "Brand", "Status", "Supplier", "SupplierCost",
+                 "Multiplier", "ExpTier10", "ActTier10", "Tier10TooLow",
+                 "TiersOffCount", "TiersOff"]
+                + [f"Exp_T{n}" for n in range(1, 11)]
+                + [f"Act_T{n}" for n in range(1, 11)])
+        with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=cols)
+            w.writeheader()
+            w.writerows(rows_out)
+        # Sheet1-format re-price file: feeding each product's CURRENT supplier cost
+        # back through normal price-file mode rebuilds the exact ladder shown above
+        # (and clears markup). Cost only — no cost change, just a re-price.
+        with open(fix_path, "w", newline="", encoding="utf-8-sig") as f:
+            fw = csv.writer(f)
+            fw.writerow(["SKU", "Name", "Cost", "Category", "Brand", "Barcode",
+                         "Discount", "CostingMethod"])
+            for r in rows_out:
+                fw.writerow([r["SKU"], r["Name"], r["SupplierCost"], "", "", "", "", ""])
+
+    print("\n" + "=" * 60)
+    print("  TIER AUDIT RESULTS")
+    print("=" * 60)
+    print(f"  Scope:                 {scope_str}")
+    print(f"  Products fetched:      {len(products)}")
+    if excluded:
+        print(f"  Bathroom Brands skipped: {excluded}")
+    print(f"  With a supplier:       {checked}")
+    print(f"  No supplier (skipped): {no_supplier}")
+    print(f"  Mismatched (total):    {mismatched}")
+    print(f"     Unpriced (no fixed tiers — likely old markup method): {n_unpriced}")
+    print(f"     Under-priced (Tier10 below cost basis):               {n_underpriced}")
+    print(f"     Selling-tier drift (Tier10 ok, tiers 1-9 off):        {n_drift}")
+    if skip_unpriced and unpriced_hidden:
+        print(f"  (Excluded {unpriced_hidden} Unpriced from the CSV — '--audit priced'.)")
+    if rows_out:
+        print(f"\n  First {min(30, len(rows_out))} of {len(rows_out)} written "
+              f"(under-priced & drift first):")
+        for r in rows_out[:30]:
+            print(f"     {r['SKU']:<18} {r['Status']:<11} exp {r['ExpTier10']:>9} "
+                  f"act {r['ActTier10']:>9}  {r['Name'][:26]}")
+        print(f"\n  Full list written to: {out_path}")
+        print(f"  Re-price file (Sheet1 format): {fix_path}")
+        print(f"    -> point PRICE_FILE_PATH at it (or rename to Sheet1.csv), "
+              f"DRY_RUN first, then run normally to fix them.")
+    elif mismatched:
+        print("\n  All mismatches were Unpriced and excluded by '--audit priced'.")
+    else:
+        print("\n  No mismatches found — all in-scope priced products look correct.")
+    print("=" * 60)
 
 
 def _extract_availability_rows(body):
@@ -1828,6 +2109,23 @@ def confirm_proceed(prompt="Proceed?"):
     return resp in ("y", "yes")
 
 
+def confirm_typed(proceed_word="CONFIRM"):
+    """Require the operator to type a specific word (default CONFIRM) to proceed.
+    Pressing Enter on an empty line cancels; ANY other entry re-prompts, so a stray
+    keystroke (e.g. 'y') can't abandon the run by accident. Ctrl+C / EOF cancels.
+    Returns True to proceed, False to cancel."""
+    while True:
+        try:
+            resp = input("  > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            return False
+        if resp == "":
+            return False
+        if resp.upper() == proceed_word.upper():
+            return True
+        print(f"  Please type {proceed_word} to proceed, or press Enter to cancel.")
+
+
 def confirm_zap_paused():
     """Live-run safety: remind the operator to pause the Zapier sync Zap(s) before
     a bulk update fires single-update Zaps for every changed product. Returns True
@@ -1883,9 +2181,7 @@ def check_business_hours():
     print("  Type CONFIRM to proceed anyway, or press Enter to cancel:")
     print("=" * 60)
 
-    response = input("  > ").strip().upper()
-
-    if response == "CONFIRM":
+    if confirm_typed():
         print()
         print("  Proceeding during business hours — Zapier tasks will be consumed.")
         print()
@@ -2122,11 +2418,7 @@ def run_deprecate_mode():
     print(f"  {len(held)} in-stock product(s) will be left active.")
     print(f"  This sets their Cin7 status to '{DEPRECATE_STATUS}'. An undo file will be written.")
     print("  Type CONFIRM to proceed, or press Enter to cancel:")
-    try:
-        resp = input("  > ").strip().upper()
-    except (KeyboardInterrupt, EOFError):
-        resp = ""
-    if resp != "CONFIRM":
+    if not confirm_typed():
         print("  Cancelled. No changes made.")
         return
     print()
@@ -2218,6 +2510,12 @@ def _parse_reactivate_arg():
     if args and args[0].lower() in ("--reactivate", "--undo"):
         return args[1] if len(args) > 1 else "last"
     return None
+
+
+def _parse_audit_arg():
+    """True if the first CLI argument is --audit (read-only tier check)."""
+    args = sys.argv[1:]
+    return bool(args) and args[0].lower() == "--audit"
 
 
 def run_reactivate_mode(undo_arg):
@@ -2333,6 +2631,11 @@ def run_reactivate_mode(undo_arg):
 
 def main():
     global LOG_FILE_PATH
+
+    # --- Audit (read-only tier check)? High-priority command-line switch. ---
+    if _parse_audit_arg():
+        run_audit_mode()
+        return
 
     # --- Reactivate (undo) mode? Highest-priority command-line switch. ---
     reactivate_arg = _parse_reactivate_arg()
@@ -2525,11 +2828,7 @@ def main():
                 return
             print(f"\n  About to apply +{pct_str}% to {len(rows)} products LIVE.")
             print("  Type CONFIRM to proceed, or press Enter to cancel:")
-            try:
-                resp = input("  > ").strip().upper()
-            except KeyboardInterrupt:
-                resp = ""
-            if resp != "CONFIRM":
+            if not confirm_typed():
                 print("  Cancelled. No changes made.")
                 return
             print()
