@@ -183,6 +183,15 @@ UPLIFT_DEFAULT_SUPPLIER = _cfg.get("UPLIFT_DEFAULT_SUPPLIER", "").strip()
 AUDIT_TOLERANCE_PERCENT = _parse_decimal(_cfg.get("AUDIT_TOLERANCE_PERCENT", "1"), "1")
 AUDIT_TOLERANCE_PENCE   = _parse_decimal(_cfg.get("AUDIT_TOLERANCE_PENCE", "2"), "2")
 
+# The audit can be triggered two ways: the --audit command-line switch, or
+# AUDIT_MODE here for when flipping a setting is easier than passing an argument
+# (running from an IDE, a shortcut, a scheduled task). Either route runs the same
+# read-only audit; it never writes, whatever else is set.
+AUDIT_MODE          = _parse_bool(_cfg.get("AUDIT_MODE", "False"))
+# Equivalent of adding 'priced' after --audit: skip the unpriced (old-markup)
+# backlog and report only genuinely mispriced products.
+AUDIT_SKIP_UNPRICED = _parse_bool(_cfg.get("AUDIT_SKIP_UNPRICED", "False"))
+
 # How file attributes (Barcode etc.) are applied when Cin7 already has a value:
 #   overwrite  = the file always wins (file is the source of truth)  [default]
 #   fill_blank = only set the attribute when Cin7's existing value is empty
@@ -338,7 +347,10 @@ class RateLimiter:
         if len(self.call_times) >= self.calls_per_minute:
             sleep_for = 60 - (now - self.call_times[0]) + 0.1
             if sleep_for > 0:
-                print(f"  [Rate limit] Pausing {sleep_for:.1f}s to stay within API limits...")
+                # Only announce meaningful waits. Sub-0.5s top-ups are just the
+                # limiter evenly spacing calls and would otherwise spam the log.
+                if sleep_for >= 0.5:
+                    print(f"  [Rate limit] Pausing {sleep_for:.1f}s to stay within API limits...")
                 time.sleep(sleep_for)
         self.call_times.append(time.time())
 
@@ -403,21 +415,27 @@ def format_money_for_note(value):
     except Exception:
         return str(value)
 
-def price_from_margin(cost, margin_percent):
+def price_from_margin(cost, margin_percent, do_round=True):
     """
     Calculate selling price from a true gross margin percentage.
     e.g. 10% margin: selling price = cost / 0.90
+    do_round=False returns the unrounded value (used by the audit so it can measure
+    the true gap rather than one inflated by penny-rounding both sides).
     """
     margin = Decimal(str(margin_percent)) / Decimal("100")
-    return money(cost / (Decimal("1") - margin))
+    val = cost / (Decimal("1") - margin)
+    return money(val) if do_round else val
 
-def price_from_double_plus(cost, uplift_percent):
+def price_from_double_plus(cost, uplift_percent, do_round=True):
     """
     Calculate Tier 1-5 prices using the double-plus-uplift formula.
     Formula: (cost x 2) x (1 + uplift%)
+    do_round=False returns the unrounded value (used by the audit so it can measure
+    the true gap rather than one inflated by penny-rounding both sides).
     """
     uplift = Decimal(str(uplift_percent)) / Decimal("100")
-    return money((cost * Decimal("2")) * (Decimal("1") + uplift))
+    val = (cost * Decimal("2")) * (Decimal("1") + uplift)
+    return money(val) if do_round else val
 
 
 # ==============================================================================
@@ -1015,7 +1033,7 @@ def cin7_fetch_full_pricing(wanted_skus=None, page_limit=1000):
             tiers = {}
             for n in range(1, 11):
                 v = p.get(f"PriceTier{n}")
-                tiers[n] = money(to_decimal_safe(v, "0")) if v not in (None, "") else None
+                tiers[n] = to_decimal_safe(v, "0") if v not in (None, "") else None
             out.append({
                 "sku":       sku,
                 "name":      clean(p.get("Name", "")).strip(),
@@ -1037,19 +1055,19 @@ def cin7_fetch_full_pricing(wanted_skus=None, page_limit=1000):
 
 
 def _audit_expected_ladder(expected_tier10):
-    """Full expected ladder (Tiers 1-10 as Decimals) from a Tier10, using the exact
-    helpers the updater uses so the audit can't drift from live pricing."""
+    """Full expected ladder at FULL precision (no rounding) so the audit measures the
+    TRUE gap, not one inflated by penny-rounding both sides before comparing."""
     return {
-        1:  price_from_double_plus(expected_tier10, 1),
-        2:  price_from_double_plus(expected_tier10, 2),
-        3:  price_from_double_plus(expected_tier10, 3),
-        4:  price_from_double_plus(expected_tier10, 5),
-        5:  price_from_double_plus(expected_tier10, 7.5),
-        6:  price_from_margin(expected_tier10, 40),
-        7:  price_from_margin(expected_tier10, 30),
-        8:  price_from_margin(expected_tier10, 20),
-        9:  price_from_margin(expected_tier10, 10),
-        10: money(expected_tier10),
+        1:  price_from_double_plus(expected_tier10, 1,   do_round=False),
+        2:  price_from_double_plus(expected_tier10, 2,   do_round=False),
+        3:  price_from_double_plus(expected_tier10, 3,   do_round=False),
+        4:  price_from_double_plus(expected_tier10, 5,   do_round=False),
+        5:  price_from_double_plus(expected_tier10, 7.5, do_round=False),
+        6:  price_from_margin(expected_tier10, 40, do_round=False),
+        7:  price_from_margin(expected_tier10, 30, do_round=False),
+        8:  price_from_margin(expected_tier10, 20, do_round=False),
+        9:  price_from_margin(expected_tier10, 10, do_round=False),
+        10: expected_tier10,
     }
 
 
@@ -1098,7 +1116,7 @@ def _audit_one(p, tol_percent=Decimal("1"), tol_pence=Decimal("2")):
         "SKU": p["sku"], "Name": p["name"], "Brand": p["brand"], "Status": status,
         "Supplier": basis["name"], "SupplierCost": to_float(cost),
         "Multiplier": format_decimal_clean(mult),
-        "ExpTier10": to_float(exp[10]), "ActTier10": to_float(stored10),
+        "ExpTier10": to_float(money(exp[10])), "ActTier10": to_float(money(stored10)),
         "Tier10TooLow": "yes" if t10_low else "no",
         "TiersOffCount": len(offs),
         "TiersOff": ",".join(f"T{n}" for n in offs),
@@ -1150,7 +1168,7 @@ def run_audit_mode():
         print(f"\n  ERROR: price fetch failed ({e}).")
         return
 
-    skip_unpriced = "priced" in [a.lower() for a in sys.argv[2:]]
+    skip_unpriced = ("priced" in [a.lower() for a in sys.argv[2:]]) or AUDIT_SKIP_UNPRICED
     checked = no_supplier = excluded = mismatched = 0
     n_unpriced = n_underpriced = n_drift = unpriced_hidden = 0
     rows_out = []
@@ -1835,19 +1853,12 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
             "AdditionalAttribute8":  product.get("AdditionalAttribute8", ""),
             "AdditionalAttribute9":  product.get("AdditionalAttribute9", ""),
             "AdditionalAttribute10": f"{supplier_fixed_price:.2f}",
-            CIN7_INTERNAL_NOTE_FIELD: build_audit_note(
-                sku=sku, name=name, dry_run=DRY_RUN,
-                simpro_action="", simpro_catalog_id="",
-                simpro_new_price=simpro_price_f,
-                supplier_cost=float(supplier_cost),
-                supplier_name=supplier_name,
-                old_cost=float(old_cost),
-                final_tier10=float(final_tier10),
-                tier10_action=tier10_action,
-                markup_multiplier_used=multiplier_str,
-                markup_prices_removed=False,
-                cost_rule=cost_rule,
-            ),
+            # The audit note is deliberately NOT written in this main PUT. It is
+            # written once, after the simPRO/Shopify sync, by the note-only PUT
+            # below (so it can record the real simPRO action / catalog id). Writing
+            # a provisional copy here as well was redundant - two PUTs per product.
+            # A mid-sync failure is still captured in the run-log CSV by the except
+            # handler at the end of process_sku, so no error information is lost.
         }
         if supplier_payload:
             cin7_payload["Suppliers"] = supplier_payload
@@ -2632,8 +2643,8 @@ def run_reactivate_mode(undo_arg):
 def main():
     global LOG_FILE_PATH
 
-    # --- Audit (read-only tier check)? High-priority command-line switch. ---
-    if _parse_audit_arg():
+    # --- Audit (read-only tier check)? Via the --audit switch or AUDIT_MODE in Config. ---
+    if _parse_audit_arg() or AUDIT_MODE:
         run_audit_mode()
         return
 

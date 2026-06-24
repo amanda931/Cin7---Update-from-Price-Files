@@ -36,7 +36,7 @@ UPDATE_SHOPIFY: False
 # run doesn't fire a single-update Zap for every changed product.
 # ZAP_NAME just labels the prompt.  Set ZAP_PAUSE_PROMPT: False to skip it.
 ZAP_PAUSE_PROMPT: True
-ZAP_NAME: Cin7 - Updated Product - Python
+ZAP_NAME: Cin7 sync Zap(s)
 
 
 # ==============================================================================
@@ -74,6 +74,11 @@ REFRESH_CATALOGUE: False
 # ==============================================================================
 # Reads the supplier CSV and updates purchase cost + all price tiers.
 # The price file IS the scope here - the Brand/Category filters above do NOT apply.
+#
+# WHICH FILE: the script reads "Sheet1.csv" from its own folder. To use a different
+# file (e.g. an audit_fix file), copy or rename it to Sheet1.csv, or change
+# PRICE_FILE_PATH near the top of the .py script. (That path is set in the script,
+# not here in Config.)
 
 # How file attributes (e.g. Barcode/GTIN) are applied when Cin7 already has a value:
 #   overwrite   = the file always wins (file is the source of truth)
@@ -112,13 +117,31 @@ UPLIFT_DEFAULT_SUPPLIER:
 
 
 # ==============================================================================
-# TIER AUDIT  -  run with:   python <script>.py --audit   (add  priced  to skip
-#                                                          the unpriced backlog)
+# TIER AUDIT  -  run with  --audit,  OR set AUDIT_MODE: True below
 # ==============================================================================
 # Read-only. Scans the catalogue and lists products whose tiers don't match what
 # their supplier cost should produce. Writes a diagnostic CSV plus a Sheet1-format
 # re-price file you can feed back through the price-file update.
 # Honours the Brand/Category filters in SCOPE above (blank = whole catalogue).
+
+# Trigger the audit without the command-line switch. True = run the read-only
+# audit instead of a normal update; same effect as passing --audit (the switch
+# still works too). It never writes, so it's safe to leave on while you work
+# through drift - just set it back to False before a real price run.
+AUDIT_MODE: False
+
+# >>> TO APPLY AN AUDIT'S FIXES (turn the report into a real update):
+#     1. Copy the newest audit_fix_<timestamp>.csv (written to this folder) onto
+#        Sheet1.csv. In PowerShell, from this folder:
+#            Copy-Item "audit_fix_<timestamp>.csv" "Sheet1.csv"
+#     2. Set AUDIT_MODE back to False (above) so the script UPDATES, not re-audits.
+#     3. DRY_RUN: True for a preview, then DRY_RUN: False to write the changes.
+#     (Leave CREATE_MISSING: False - an audit_fix file only lists products that
+#      already exist, so there is nothing to create.)
+
+# Skip the unpriced (old-markup) backlog and report only genuinely mispriced
+# products. Same as adding 'priced' after --audit.
+AUDIT_SKIP_UNPRICED: False
 
 # A tier is only flagged when it is off by BOTH of these at once - at least this
 # percent of the expected price AND at least this many pence - so penny rounding is
