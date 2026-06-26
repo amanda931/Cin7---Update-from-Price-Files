@@ -80,6 +80,10 @@ TDS
 SDS
 L/H
 R/H
+C/C
+S/C
+W/C
+F/Shrouded
 
 # --- Merlyn / Arysto shower enclosures (finishes & ranges) ---
 # MB = Matt Black, BBR = Brushed Brass, BGM = Brushed Gun Metal,

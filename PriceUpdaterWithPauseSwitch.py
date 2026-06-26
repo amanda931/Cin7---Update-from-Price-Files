@@ -192,6 +192,14 @@ AUDIT_MODE          = _parse_bool(_cfg.get("AUDIT_MODE", "False"))
 # backlog and report only genuinely mispriced products.
 AUDIT_SKIP_UNPRICED = _parse_bool(_cfg.get("AUDIT_SKIP_UNPRICED", "False"))
 
+# Whether each live update first clears the product's Cin7 markup rule before
+# writing fixed tiers. True = clear it per product (the original behaviour, needed
+# while migrating markup-priced products one at a time). False = skip that call,
+# which saves one Cin7 call per product. Default True so an older Config without
+# this key keeps the safe behaviour; set False (and clear markup in bulk yourself)
+# when you want the faster run. See REMOVE_MARKUP_PRICES note in Config.txt.
+REMOVE_MARKUP_PRICES = _parse_bool(_cfg.get("REMOVE_MARKUP_PRICES", "True"))
+
 # How file attributes (Barcode etc.) are applied when Cin7 already has a value:
 #   overwrite  = the file always wins (file is the source of truth)  [default]
 #   fill_blank = only set the attribute when Cin7's existing value is empty
@@ -1038,6 +1046,7 @@ def cin7_fetch_full_pricing(wanted_skus=None, page_limit=1000):
                 "sku":       sku,
                 "name":      clean(p.get("Name", "")).strip(),
                 "brand":     clean(p.get("Brand", "")).strip(),
+                "category":  clean(p.get("Category", "")).strip(),
                 "mult_raw":  p.get("AdditionalAttribute2", ""),
                 "tiers":     tiers,
                 "suppliers": suppliers,
@@ -1174,7 +1183,8 @@ def run_audit_mode():
     rows_out = []
     for p in products:
         if (EXCLUDE_BATHROOM_BRANDS and wanted is None
-                and p["brand"].strip().lower() == "bathroom brands"):
+                and "bathroom brands" in (p["brand"].strip().lower(),
+                                          p.get("category", "").strip().lower())):
             excluded += 1
             continue
         status, row = _audit_one(p, AUDIT_TOLERANCE_PERCENT, AUDIT_TOLERANCE_PENCE)
@@ -1896,11 +1906,12 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
             result["Success"] = True
             return result
 
-        # --- Live: remove Cin7 markup rules and update ---
+        # --- Live: (optionally) remove Cin7 markup rules, then update ---
         if UPDATE_CIN7:
-            markup_result = cin7_remove_markup_prices(product_id)
-            if not markup_result.get("ok"):
-                raise ValueError(f"Cin7 markup removal failed: {markup_result.get('response')}")
+            if REMOVE_MARKUP_PRICES:
+                markup_result = cin7_remove_markup_prices(product_id)
+                if not markup_result.get("ok"):
+                    raise ValueError(f"Cin7 markup removal failed: {markup_result.get('response')}")
 
             rate_limiter.wait()
             put_resp = requests.put(CIN7_PRODUCT_URL, headers=cin7_headers,
@@ -1980,7 +1991,7 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
                 final_tier10=float(final_tier10),
                 tier10_action=tier10_action,
                 markup_multiplier_used=multiplier_str,
-                markup_prices_removed=True,
+                markup_prices_removed=REMOVE_MARKUP_PRICES,
                 cost_rule=cost_rule,
             )
             rate_limiter.wait()

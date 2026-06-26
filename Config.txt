@@ -66,7 +66,7 @@ CATALOGUE_MAX_AGE_HOURS: 24
 # Force a rebuild on the next run regardless of age (e.g. right after adding new
 # products you want included straight away). It only forces the NEXT run - no need
 # to switch it back.
-REFRESH_CATALOGUE: False
+REFRESH_CATALOGUE: True
 
 
 # ==============================================================================
@@ -84,6 +84,18 @@ REFRESH_CATALOGUE: False
 #   overwrite   = the file always wins (file is the source of truth)
 #   fill_blank  = only set the attribute when Cin7's existing value is empty
 ATTRIBUTE_FILL_MODE: overwrite
+
+# Clear each product's Cin7 markup rule before writing its fixed tiers?
+#   True  = clear it per product (original behaviour; the safe choice while you are
+#           still migrating markup-priced products onto fixed tiers).
+#   False = skip that call - one fewer Cin7 call per product, ~25% faster runs.
+# Set False ONLY if you intend to clear the markup rules in bulk yourself, in Cin7,
+# afterwards. WARNING: a bulk clear in Cin7 strips the markup from EVERY product
+# that still has one - including any your fixed-tier run did not cover (e.g. the
+# no-supplier products the audit skips) - and those would drop to GBP 0.00. Before
+# you bulk-clear, make sure every live, markup-priced product already has fixed
+# tiers, or it will be left with no price at all.
+REMOVE_MARKUP_PRICES: False
 
 
 # ==============================================================================
@@ -159,7 +171,7 @@ AUDIT_TOLERANCE_PENCE: 2
 # boilerplate from the NEW_PRODUCT_* values below; per-row Category / Brand /
 # Barcode / CostingMethod / Discount / Supplier columns override the defaults.
 # Category is REQUIRED for a create - supply a column or set the default below.
-CREATE_MISSING: False
+CREATE_MISSING: True
 
 # --- Boilerplate applied to every new product ---
 NEW_PRODUCT_TYPE: Stock
@@ -172,19 +184,19 @@ NEW_PRODUCT_REVENUE_ACCOUNT: 240
 NEW_PRODUCT_PURCHASE_TAX_RULE: 20% (VAT on Expenses)
 NEW_PRODUCT_SALE_TAX_RULE: 20% (VAT on Income)
 NEW_PRODUCT_ATTRIBUTE_SET: Product Details
-NEW_PRODUCT_MULTIPLIER: 2
+NEW_PRODUCT_MULTIPLIER: 2.5
 NEW_PRODUCT_DROPSHIP: No Drop Ship
 
 # --- Fallbacks, used only when a file row leaves these blank ---
 # (Serial-tracked items, e.g. boilers/filters: put "Serial" in a CostingMethod
 #  column on those rows - it maps to "FIFO - Serial Number".)
 NEW_PRODUCT_DEFAULT_CATEGORY: Bathroom Brands
-NEW_PRODUCT_DEFAULT_BRAND: Merlyn
+NEW_PRODUCT_DEFAULT_BRAND: Bathrooms2Go
 
 # Attach the file Cost to this supplier on new products. Blank = create with correct
 # selling prices but NO supplier-cost row (add via your PO process). Must be an
 # existing Cin7 supplier name; a "Supplier" column overrides this per row.
-NEW_PRODUCT_SUPPLIER: Merlyn Industries Limited
+NEW_PRODUCT_SUPPLIER: PJH Group
 
 
 # ==============================================================================
