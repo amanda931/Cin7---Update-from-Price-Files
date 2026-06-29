@@ -180,23 +180,23 @@ NEW_PRODUCT_UOM: Each
 NEW_PRODUCT_LOCATION: Warehouse
 NEW_PRODUCT_INVENTORY_ACCOUNT: 300
 NEW_PRODUCT_COGS_ACCOUNT: 310
-NEW_PRODUCT_REVENUE_ACCOUNT: 240
+NEW_PRODUCT_REVENUE_ACCOUNT: 200
 NEW_PRODUCT_PURCHASE_TAX_RULE: 20% (VAT on Expenses)
 NEW_PRODUCT_SALE_TAX_RULE: 20% (VAT on Income)
 NEW_PRODUCT_ATTRIBUTE_SET: Product Details
-NEW_PRODUCT_MULTIPLIER: 2.5
+NEW_PRODUCT_MULTIPLIER: 2
 NEW_PRODUCT_DROPSHIP: No Drop Ship
 
 # --- Fallbacks, used only when a file row leaves these blank ---
 # (Serial-tracked items, e.g. boilers/filters: put "Serial" in a CostingMethod
 #  column on those rows - it maps to "FIFO - Serial Number".)
-NEW_PRODUCT_DEFAULT_CATEGORY: Bathroom Brands
-NEW_PRODUCT_DEFAULT_BRAND: Bathrooms2Go
+NEW_PRODUCT_DEFAULT_CATEGORY: Radiators
+NEW_PRODUCT_DEFAULT_BRAND: Henrad
 
 # Attach the file Cost to this supplier on new products. Blank = create with correct
 # selling prices but NO supplier-cost row (add via your PO process). Must be an
 # existing Cin7 supplier name; a "Supplier" column overrides this per row.
-NEW_PRODUCT_SUPPLIER: PJH Group
+NEW_PRODUCT_SUPPLIER: F & P Primaflow
 
 
 # ==============================================================================

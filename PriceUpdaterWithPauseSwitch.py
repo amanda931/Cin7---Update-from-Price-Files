@@ -407,6 +407,21 @@ def format_decimal_clean(value, max_decimal_places=4):
         text = text.rstrip("0").rstrip(".")
     return text
 
+def _parse_file_multiplier(value):
+    """Parse a Sheet1 'MarkUpMultiplier' cell. Returns a positive Decimal when the
+    cell is a clean number, or None when it is blank / non-numeric / <= 0. Used so a
+    typo is ignored (and flagged) rather than silently applied. Stricter than
+    to_decimal_safe on purpose: it will NOT salvage a number out of junk like
+    'abc' — anything that isn't a plain positive number is rejected."""
+    s = clean(value).strip().replace(",", "")
+    if not s:
+        return None
+    try:
+        d = Decimal(s)
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return d if d > 0 else None
+
 def parse_percent(value, default=0):
     """Extract a percentage value from plain or messy text."""
     if value in [None, ""]:
@@ -1592,7 +1607,7 @@ def shopify_update_variant_price(variant_id, price, compare_at_price):
 # Fetches product from Cin7, calculates new prices, updates Cin7 and simPRO.
 # ==============================================================================
 
-def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=None, uplift=None, file_attrs=None, create_fields=None):
+def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=None, uplift=None, file_attrs=None, create_fields=None, file_multiplier=None):
     """
     Process one SKU from the price file.
     Returns a result dict written to the log CSV.
@@ -1737,12 +1752,39 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
             supplier_name = clean(existing_suppliers[0].get("SupplierName", ""))
         result["OldSupplierCost"] = float(old_cost)
 
-        # --- Read markup multiplier from AdditionalAttribute2 (minimum 2) ---
-        raw_multiplier    = product.get("AdditionalAttribute2", "")
+        # --- Markup multiplier (minimum 2) ---
+        # A 'MarkUpMultiplier' value from the Sheet1 row OVERRIDES the product's
+        # existing AdditionalAttribute2: the new value drives the tier maths below
+        # AND is written back to AA2, so prices and multiplier stay consistent in
+        # one pass. Blank cell -> keep the existing AA2 (unchanged behaviour). A
+        # bad cell (non-numeric / <= 0) is ignored and flagged, never silently used.
+        existing_aa2   = product.get("AdditionalAttribute2", "")
+        raw_multiplier = existing_aa2
+        file_mult_applied = False
+        parsed_mult = None
+        if file_multiplier:
+            parsed_mult = _parse_file_multiplier(file_multiplier)
+            if parsed_mult is not None:
+                raw_multiplier = file_multiplier
+                file_mult_applied = True
+            else:
+                result["Error"] = (result.get("Error") or "") + \
+                    f" [MarkUpMultiplier '{file_multiplier}' ignored: not a valid number]"
+                print(f"  [warn] SKU {sku}: MarkUpMultiplier '{file_multiplier}' ignored "
+                      "(not a valid number) - keeping existing multiplier.")
         markup_multiplier = to_decimal_safe(raw_multiplier, "2")
-        if markup_multiplier < Decimal("2"):
+        floored = markup_multiplier < Decimal("2")
+        if floored:
             markup_multiplier = Decimal("2")
         multiplier_str = format_decimal_clean(markup_multiplier)
+        if file_mult_applied:
+            # Report the value actually written (post-floor), not just the file cell,
+            # so the console never implies a below-floor value went in.
+            msg = (f"  SKU {sku}: MarkUpMultiplier "
+                   f"{clean(existing_aa2) or '(blank)'} -> {multiplier_str}")
+            if floored:
+                msg += f" (file value {format_decimal_clean(parsed_mult)} is below the floor; set to 2)"
+            print(msg)
 
         if uplift:
             # --- Manufacturer uplift mode (no price file) ---
@@ -2874,6 +2916,14 @@ def main():
                     h = header_lookup.get(col.strip().lower())
                     if h:
                         attr_cols[h] = cin7_field
+                # Optional MarkUpMultiplier column. When a row supplies a value it
+                # OVERRIDES the product's existing AdditionalAttribute2, so the tiers
+                # are recomputed AND the new multiplier is written, in one pass. Blank
+                # cell -> keep the existing multiplier (current behaviour). Handled on
+                # its own (not via ATTRIBUTE_COLUMN_MAP) so it feeds the tier maths,
+                # not just a write-back.
+                mult_header = (header_lookup.get("markupmultiplier")
+                               or header_lookup.get("multiplier"))
                 # Resolve create-only columns (used when CREATE_MISSING adds a product)
                 create_cols = {}  # logical name -> actual CSV header
                 for cname in ("Category", "Brand", "CostingMethod", "Discount", "Supplier"):
@@ -2895,7 +2945,8 @@ def main():
                             v = (row.get(h) or "").strip()
                             if v:
                                 cfields[cname] = v
-                        rows.append((sku, name, to_decimal_safe(cost), attrs, cfields))
+                        file_mult = (row.get(mult_header) or "").strip() if mult_header else ""
+                        rows.append((sku, name, to_decimal_safe(cost), attrs, cfields, file_mult))
         except FileNotFoundError:
             print(f"\nERROR: Price file not found at '{PRICE_FILE_PATH}'")
             print("Check the PRICE_FILE_PATH setting at the top of the script.")
@@ -2909,6 +2960,9 @@ def main():
             print("Attribute columns detected: "
                   + ", ".join(f"{h} -> {f}" for h, f in attr_cols.items())
                   + f"  (mode: {ATTRIBUTE_FILL_MODE})")
+        if mult_header:
+            print(f"MarkUpMultiplier column detected: '{mult_header}' — rows with a value "
+                  "will recompute tiers AND update AdditionalAttribute2 (blank = unchanged).")
         if CREATE_MISSING:
             cc = ", ".join(create_cols.keys()) if create_cols else "none (using Config defaults)"
             print(f"Create-missing: ON — SKUs not found in Cin7 will be CREATED. "
@@ -3000,12 +3054,13 @@ def main():
     stopped_early = False
     i = 0
     while i < len(rows):
-        sku, file_name, new_cost, file_attrs, create_fields = rows[i]
+        sku, file_name, new_cost, file_attrs, create_fields, file_multiplier = rows[i]
         print(f"[{i+1}/{len(rows)}] Processing SKU: {sku}")
         try:
             results.append(process_sku(sku, file_name, new_cost, access_token,
                                        vendor_info, uplift=uplift_ctx,
-                                       file_attrs=file_attrs, create_fields=create_fields))
+                                       file_attrs=file_attrs, create_fields=create_fields,
+                                       file_multiplier=file_multiplier))
             i += 1
         except KeyboardInterrupt:
             print(f"\n\n  Ctrl+C — interrupted during SKU {sku}.")
