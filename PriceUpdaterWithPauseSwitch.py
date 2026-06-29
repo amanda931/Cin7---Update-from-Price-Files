@@ -147,6 +147,19 @@ UPDATE_CIN7        = _parse_bool(_cfg.get("UPDATE_CIN7", "True"))
 UPDATE_SIMPRO      = _parse_bool(_cfg.get("UPDATE_SIMPRO", "True"))
 UPDATE_SHOPIFY     = _parse_bool(_cfg.get("UPDATE_SHOPIFY", "False"))
 
+# Cost-decrease guard ----------------------------------------------------------
+# Hold (skip) any SKU whose new supplier cost is materially BELOW the old cost, so
+# a mis-keyed price file (e.g. a sort that de-synced the discount column) can't
+# quietly lower costs/prices. A held line writes NOTHING to Cin7/simPRO/Shopify;
+# it is logged as a failure with Action 'skipped_cost_decrease' so it lands in the
+# retry set. Review the held lines, and if the reductions are genuine push just
+# those through with:   python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
+# COST_DECREASE_TOLERANCE is a small £ slack so penny rounding never trips the guard.
+BLOCK_COST_DECREASES    = _parse_bool(_cfg.get("BLOCK_COST_DECREASES", "True"))
+COST_DECREASE_TOLERANCE = _parse_decimal(_cfg.get("COST_DECREASE_TOLERANCE", "0.02"), "0.02")
+# Set True by the --allow-decreases command-line flag (see _parse_allow_decreases).
+ALLOW_COST_DECREASES    = False
+
 # Filters / scope (previously in Config.txt but unused — now read for uplift mode).
 # File mode ignores these, so its behaviour is unchanged.
 EXCLUDE_BATHROOM_BRANDS = _parse_bool(_cfg.get("EXCLUDE_BATHROOM_BRANDS", "True"))
@@ -1829,6 +1842,30 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
             cost_rule = "Bulk price file update"
 
         result["NewSupplierCost"] = float(supplier_cost)
+
+        # --- Cost-decrease guard -------------------------------------------------
+        # Hold any SKU whose new cost is materially below the old cost, unless the
+        # run is explicitly allowing decreases (--allow-decreases). Skips before any
+        # tiers are computed or anything is written, so a held line is a true no-op.
+        # Not applied in uplift mode (which only raises) or for newly-created products
+        # (no prior cost to compare against).
+        if (BLOCK_COST_DECREASES and not ALLOW_COST_DECREASES
+                and not uplift and not is_create and old_cost > 0):
+            drop = old_cost - supplier_cost
+            if drop > COST_DECREASE_TOLERANCE:
+                pct = (drop / old_cost * Decimal("100")) if old_cost else Decimal("0")
+                result["Action"]  = "skipped_cost_decrease"
+                result["Success"] = False
+                result["Cin7Updated"] = result["SimproUpdated"] = result["ShopifyUpdated"] = False
+                result["Error"] = (
+                    f"Held: new cost {format_money_for_note(supplier_cost)} is below old cost "
+                    f"{format_money_for_note(old_cost)} (-{format_money_for_note(drop)}, -{pct:.1f}%). "
+                    f"Review and, if correct, retry with --allow-decreases."
+                )
+                print(f"  HELD {sku}: cost {format_money_for_note(old_cost)} -> "
+                      f"{format_money_for_note(supplier_cost)} (down {pct:.1f}%) — skipped for review.")
+                return result
+
         cost  = final_tier10
         tiers = {
             "Tier1":  to_float(price_from_double_plus(cost, 1)),
@@ -2138,9 +2175,20 @@ def _parse_retry_arg():
     """
     args = sys.argv[1:]
     if args and args[0].lower() in ("--retry", "-r", "retry"):
-        log_path = args[1] if len(args) > 1 else None
+        # The optional log path is the first NON-flag token after --retry, so other
+        # switches (e.g. --allow-decreases) can sit anywhere without being mistaken
+        # for a filename.
+        log_path = next((a for a in args[1:] if not a.startswith("-")), None)
         return True, log_path
     return False, None
+
+
+def _parse_allow_decreases():
+    """True if --allow-decreases (alias --allow-cost-decreases) is anywhere on the
+    command line. Lets a reviewed retry push genuine cost reductions through the
+    BLOCK_COST_DECREASES guard for this run only."""
+    flags = {a.lower() for a in sys.argv[1:]}
+    return bool(flags & {"--allow-decreases", "--allow-cost-decreases"})
 
 
 def _apply_retry_filter(rows, error_skus):
@@ -2694,7 +2742,11 @@ def run_reactivate_mode(undo_arg):
 
 
 def main():
-    global LOG_FILE_PATH
+    global LOG_FILE_PATH, ALLOW_COST_DECREASES
+
+    # --allow-decreases lets a reviewed run push genuine cost reductions past the
+    # BLOCK_COST_DECREASES guard (this run only; nothing is persisted).
+    ALLOW_COST_DECREASES = _parse_allow_decreases()
 
     # --- Audit (read-only tier check)? Via the --audit switch or AUDIT_MODE in Config. ---
     if _parse_audit_arg() or AUDIT_MODE:
@@ -3013,6 +3065,11 @@ def main():
                   f"UOM {NEW_PRODUCT_UOM}, location {NEW_PRODUCT_LOCATION}")
         print(f"  Targets:       Cin7 [{'Y' if UPDATE_CIN7 else 'n'}]  "
               f"simPRO [{'Y' if UPDATE_SIMPRO else 'n'}]  Shopify [{'Y' if UPDATE_SHOPIFY else 'n'}]")
+        if BLOCK_COST_DECREASES and not ALLOW_COST_DECREASES:
+            print(f"  Cost guard:    ON — hold any SKU whose cost drops > "
+                  f"{format_money_for_note(COST_DECREASE_TOLERANCE)} (logged for review)")
+        elif ALLOW_COST_DECREASES:
+            print(f"  Cost guard:    OFF — --allow-decreases set, cost reductions WILL be applied")
         if retry_mode:
             print(f"  Retry:         only the {len(rows)} SKU(s) that failed last run")
         print(f"  Mode:          {'DRY RUN — preview only, no changes written' if DRY_RUN else 'LIVE — changes WILL be written'}")
@@ -3102,6 +3159,8 @@ def main():
     # Print summary
     success_count = sum(1 for r in results if r["Success"])
     error_count   = len(results) - success_count
+    held_count    = sum(1 for r in results if r.get("Action") == "skipped_cost_decrease")
+    real_errors   = error_count - held_count
     skipped_count = len(rows) - len(results)
     created_count = sum(1 for r in results if r.get("Action") in ("created", "would_create") and r["Success"])
     updated_count = sum(1 for r in results if r.get("Action") in ("updated", "would_update") and r["Success"])
@@ -3114,22 +3173,33 @@ def main():
     if CREATE_MISSING or created_count:
         verb = "Would create / update" if DRY_RUN else "Created / updated"
         print(f"  {verb}: {created_count} new, {updated_count} existing")
-    if error_count:
-        print(f"  {error_count} error(s) — check the log file for details.")
+    if held_count:
+        print(f"  {held_count} held — cost would have decreased (Action 'skipped_cost_decrease'). "
+              f"Review, then re-run with --allow-decreases to apply the genuine ones.")
+    if real_errors:
+        print(f"  {real_errors} error(s) — check the log file for details.")
     print(f"Log saved to: {LOG_FILE_PATH}")
     print("=" * 60)
     if DRY_RUN:
         print("\nThis was a DRY RUN. Set DRY_RUN = False to apply live changes.")
 
-    # Point the way to retrying any failures from this run
+    # Point the way to retrying any failures / held lines from this run
     if error_count:
         script_name = os.path.basename(__file__)
-        if retry_mode:
-            print(f"\n{error_count} SKU(s) still failed. To retry them again, run:")
+        if held_count and not real_errors:
+            # Only held lines — the natural next step is a reviewed, decrease-allowing retry
+            print(f"\nTo apply the {held_count} held cost reduction(s) once reviewed, run:")
+            print(f'    cd "{SCRIPT_DIR}"')
+            print(f"    python {script_name} --retry last --allow-decreases")
         else:
-            print(f"\nTo retry just the {error_count} failed SKU(s), run:")
-        print(f'    cd "{SCRIPT_DIR}"')
-        print(f"    python {script_name} --retry last")
+            if retry_mode:
+                print(f"\n{error_count} SKU(s) still failed/held. To retry them again, run:")
+            else:
+                print(f"\nTo retry just the {error_count} failed/held SKU(s), run:")
+            print(f'    cd "{SCRIPT_DIR}"')
+            print(f"    python {script_name} --retry last")
+            if held_count:
+                print(f"  (add --allow-decreases to let the {held_count} held cost reduction(s) through)")
 
 
 if __name__ == "__main__":
