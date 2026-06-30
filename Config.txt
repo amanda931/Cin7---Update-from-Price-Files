@@ -30,7 +30,7 @@ RATE_LIMIT_PER_MIN: 55
 # Which systems to write to (price-file update and uplift modes).
 UPDATE_CIN7: True
 UPDATE_SIMPRO: True
-UPDATE_SHOPIFY: False
+UPDATE_SHOPIFY: True
 
 # Before any LIVE run, prompt to confirm the sync Zap(s) are turned OFF, so a bulk
 # run doesn't fire a single-update Zap for every changed product.
@@ -96,6 +96,24 @@ ATTRIBUTE_FILL_MODE: overwrite
 # you bulk-clear, make sure every live, markup-priced product already has fixed
 # tiers, or it will be left with no price at all.
 REMOVE_MARKUP_PRICES: False
+
+# --- Cost-decrease guard (file mode) ---
+# Hold any SKU whose NEW supplier cost (from the file) is lower than the OLD cost
+# already in Cin7. A held line writes NOTHING - no cost, no tiers, no simPRO/Shopify -
+# and is logged with Action 'skipped_cost_decrease' so you can review it. This is the
+# backstop against a mis-keyed file (e.g. a sort that de-syncs a column) quietly
+# lowering live prices. Increases and unchanged lines apply as normal. Only guards
+# products that already have a supplier cost in Cin7; new products and uplift mode
+# are unaffected.
+#   True  = hold cost reductions for review  [recommended]
+#   False = apply cost reductions without holding
+# After reviewing the held lines, push the genuine ones through with:
+#     python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
+BLOCK_COST_DECREASES: True
+
+# Rounding slack, in pounds. A drop within this much is treated as rounding and let
+# through; only a larger reduction is held. Raise it if your cost maths rounds loosely.
+COST_DECREASE_TOLERANCE: 0.02
 
 
 # ==============================================================================
@@ -180,7 +198,7 @@ NEW_PRODUCT_UOM: Each
 NEW_PRODUCT_LOCATION: Warehouse
 NEW_PRODUCT_INVENTORY_ACCOUNT: 300
 NEW_PRODUCT_COGS_ACCOUNT: 310
-NEW_PRODUCT_REVENUE_ACCOUNT: 200
+NEW_PRODUCT_REVENUE_ACCOUNT: 240
 NEW_PRODUCT_PURCHASE_TAX_RULE: 20% (VAT on Expenses)
 NEW_PRODUCT_SALE_TAX_RULE: 20% (VAT on Income)
 NEW_PRODUCT_ATTRIBUTE_SET: Product Details
@@ -190,14 +208,13 @@ NEW_PRODUCT_DROPSHIP: No Drop Ship
 # --- Fallbacks, used only when a file row leaves these blank ---
 # (Serial-tracked items, e.g. boilers/filters: put "Serial" in a CostingMethod
 #  column on those rows - it maps to "FIFO - Serial Number".)
-NEW_PRODUCT_DEFAULT_CATEGORY: Radiators
-NEW_PRODUCT_DEFAULT_BRAND: Henrad
+NEW_PRODUCT_DEFAULT_CATEGORY: Wall Panels
+NEW_PRODUCT_DEFAULT_BRAND: Grant Westfield
 
 # Attach the file Cost to this supplier on new products. Blank = create with correct
 # selling prices but NO supplier-cost row (add via your PO process). Must be an
 # existing Cin7 supplier name; a "Supplier" column overrides this per row.
-NEW_PRODUCT_SUPPLIER: F & P Primaflow
-
+NEW_PRODUCT_SUPPLIER: Grant Westfield Ltd
 
 # ==============================================================================
 # DEPRECATE DISCONTINUED PRODUCTS  -  DEPRECATE_MODE: True

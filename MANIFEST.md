@@ -103,4 +103,27 @@ simPRO base `https://mjryder.simprosuite.com`; supplier name `RHS Group Ltd`.
 
 ## 8. Conventions
 
-- **Python 3.14**, Windows, PowerShe
+- **Python 3.14**, Windows, PowerShell for file ops.
+- **Config-driven over command-line** — strong, consistent preference.
+- **Smallest safe change**; confirm approach before modifying this script.
+- **Dry-run before live**; offline tests exercise the real helpers.
+- **Git commit after each change.**
+
+---
+
+## 9. Roadmap / open threads *(snapshot — 30 Jun 2026)*
+
+**Recently done**
+- **Cost-decrease guard** — `BLOCK_COST_DECREASES` holds any SKU whose new file cost is below Cin7's existing cost (writes nothing, logs `skipped_cost_decrease`); `COST_DECREASE_TOLERANCE` allows rounding slack; `--allow-decreases` pushes reviewed reductions through.
+- **Read-only tier audit** — `--audit` / `AUDIT_MODE` scans the catalogue, lists tier drift against expected prices, and writes both a diagnostic CSV and a Sheet1-format `audit_fix_*.csv` to feed back through a price-file run.
+- **Per-row `MarkUpMultiplier`** — a `MarkUpMultiplier` column overrides the product's existing `AdditionalAttribute2` for the tier maths (floor 2).
+- **Barcode now syncs to Shopify** — file `Barcode` → variant, guarded by `ATTRIBUTE_FILL_MODE`, only when supplied and different, never blanks an existing one.
+
+**Designed but NOT built** (do not assume these exist in code)
+- `SIMPRO_SYNC_TIER` — decouple the simPRO sync tier from Shopify (default Tier 4) so MJ Ryder's feed can move to Tier 5 (+~2.4%) without touching web prices.
+- Channel-aware `ALIGN_MODE` — full-catalogue re-sync of one channel (simPRO *or* Shopify) to its tier, with bulk-read + skip-if-unchanged + resumable checkpoint. *Currently shelved as disproportionate.*
+- `HARD_RESET_PRICES` switch.
+
+**Open questions**
+- Which simPRO field is MJ Ryder's true cost (catalogue trade price vs RHS vendor nett price) — decides one-vs-two writes per record.
+- How MJ Ryder is actually billed (Cin7 account tier vs synced price) — decides whether any sync change is needed at all.

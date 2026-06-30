@@ -37,6 +37,12 @@
 #     cost and any attribute columns are faithful — failed SKUs no longer in the
 #     source are reported and skipped. Writes its own price_update_retry_log_... file.
 #
+# Applying held cost decreases (the cost-decrease guard skipped them for review):
+#   python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
+#   - Reruns the SKUs held as 'skipped_cost_decrease' and, for THIS run only, lets
+#     genuine cost reductions through. Review the held lines in the log first. The
+#     flag is not saved anywhere, so the guard is back on automatically next run.
+#
 # Credentials.txt format:
 #   CIN7_ACCOUNT_ID: your_value_here
 #   CIN7_APPLICATION_KEY: your_value_here
@@ -398,15 +404,21 @@ def clean(value, default=""):
     return str(value)
 
 def to_decimal_safe(value, default="0"):
-    """Safely convert a value to Decimal, extracting the first number if needed."""
+    """Safely convert a value to Decimal, extracting the first number if needed.
+
+    Tolerates thousands separators and a leading currency symbol, so a price cell
+    like '£1,090.00' reads as 1090.00 rather than being truncated at the comma to
+    £1. UK locale only: '.' is the decimal point and ',' is always a thousands
+    grouping, so commas are simply removed before conversion."""
     try:
         if value in [None, ""]:
             return Decimal(str(default))
-        text = str(value).strip()
-        match = re.search(r"-?\d+(\.\d+)?", text)
+        text = str(value).strip().replace("\u00a3", "").replace(" ", "")
+        # Allow commas inside the integer part of the number, then strip them.
+        match = re.search(r"-?\d[\d,]*(\.\d+)?", text)
         if not match:
             return Decimal(str(default))
-        return Decimal(match.group(0))
+        return Decimal(match.group(0).replace(",", ""))
     except Exception:
         return Decimal(str(default))
 
@@ -1579,7 +1591,7 @@ def shopify_find_variant_by_sku(sku):
     """
     gql = (
         '{ productVariants(first: 5, query: "sku:\\"' + sku + '\\"") '
-        '{ edges { node { id sku price compareAtPrice product { id title } } } } }'
+        '{ edges { node { id sku price compareAtPrice barcode product { id title } } } } }'
     )
     query = {"query": gql}
     r = requests.post(
@@ -1599,16 +1611,22 @@ def shopify_find_variant_by_sku(sku):
 
     return {"ok": False, "error": f"SKU not found in Shopify: {sku}"}
 
-def shopify_update_variant_price(variant_id, price, compare_at_price):
+def shopify_update_variant_price(variant_id, price, compare_at_price, barcode=None):
     numeric_id = str(variant_id).split("/")[-1]
     url = f"{SHOPIFY_API_URL}/variants/{numeric_id}.json"
-    payload = {
-        "variant": {
-            "id":               numeric_id,
-            "price":            f"{price:.2f}",
-            "compare_at_price": f"{compare_at_price:.2f}"
-        }
+    variant_payload = {
+        "id":               numeric_id,
+        "price":            f"{price:.2f}",
+        "compare_at_price": f"{compare_at_price:.2f}"
     }
+    # Only ever SET a barcode, never blank one. The caller passes None unless the
+    # file supplied a non-blank barcode that should be written (see the call site,
+    # which applies the same ATTRIBUTE_FILL_MODE rules as the Cin7 overlay).
+    if barcode:
+        bc = str(barcode).strip()
+        if bc:                      # ignore whitespace-only: never blanks a barcode
+            variant_payload["barcode"] = bc
+    payload = {"variant": variant_payload}
     r = requests.put(url, headers=shopify_headers, json=payload, timeout=30)
     if r.status_code in (200, 201):
         return {"ok": True}
@@ -2079,20 +2097,37 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
                                           CIN7_INTERNAL_NOTE_FIELD: final_note}),
                          timeout=30)
 
-        # --- Live: update Shopify variant price ---
+        # --- Live: update Shopify variant price (and barcode, if supplied) ---
         if UPDATE_SHOPIFY:
             shopify_lookup = shopify_find_variant_by_sku(sku)
             if shopify_lookup.get("ok"):
+                variant = shopify_lookup["variant"]
+
+                # Push a file-supplied barcode to the Shopify variant, mirroring the
+                # Cin7 overlay rules: only when the file gives a non-blank value that
+                # differs from Shopify's current one, and — in fill_blank mode — only
+                # when Shopify's is empty. Never blanks an existing Shopify barcode.
+                file_barcode     = str((file_attrs or {}).get("Barcode") or "").strip()
+                existing_barcode = str(variant.get("barcode") or "").strip()
+                barcode_to_set   = None
+                if file_barcode and file_barcode != existing_barcode:
+                    if not (ATTRIBUTE_FILL_MODE == "fill_blank" and existing_barcode):
+                        barcode_to_set = file_barcode
+
                 shopify_result = shopify_update_variant_price(
-                    variant_id       = shopify_lookup["variant"]["id"],
+                    variant_id       = variant["id"],
                     price            = simpro_price_f,
-                    compare_at_price = tiers["Tier4"]
+                    compare_at_price = tiers["Tier4"],
+                    barcode          = barcode_to_set
                 )
                 if shopify_result.get("ok"):
                     result["ShopifyUpdated"]        = True
                     result["ShopifyPrice"]          = simpro_price_f
                     result["ShopifyCompareAtPrice"] = tiers["Tier4"]
-                    shopify_status = f"\u00a3{simpro_price_f}"
+                    if barcode_to_set:
+                        result["ShopifyBarcode"] = barcode_to_set
+                    shopify_status = (f"\u00a3{simpro_price_f}"
+                                      + (f" +barcode {barcode_to_set}" if barcode_to_set else ""))
                 else:
                     result["Error"] = f"Shopify: {shopify_result.get('error', '')}"
                     shopify_status = "failed"

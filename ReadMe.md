@@ -9,14 +9,16 @@ Everything shares the same recalculation formulas, the same detailed audit notes
 
 ## The jobs this script does
 
-There are three "modes" plus two command-line utilities. You pick a mode in `Config.txt`; the utilities are triggered from the command line.
+There are four "modes" plus three command-line utilities. You pick a mode in `Config.txt`; the utilities are triggered from the command line.
 
 | Job | How you turn it on | What it does |
 |-----|--------------------|--------------|
 | **Price-file mode** (default) | `UPLIFT_MODE: False`, `DEPRECATE_MODE: False` | Reads a small CSV of new supplier costs and cascades each through Cin7, simPRO and Shopify. Can also **create** missing products. |
 | **Uplift mode** | `UPLIFT_MODE: True` | No file — finds a brand/range itself and lifts its prices by a set percentage. |
 | **Deprecate mode** | `DEPRECATE_MODE: True` | No price changes — reads the file as the *complete* list for one brand and retires in-brand products that have dropped off it **and hold no stock**. |
-| **Retry** (utility) | `--retry last` on the command line | Re-runs only the SKUs that failed/​errored in a previous run's log. |
+| **Tier audit** | `AUDIT_MODE: True` *or* `--audit` | Read-only. Scans the catalogue and lists products whose tiers don't match what their supplier cost should produce; writes a diagnostic CSV plus a Sheet1-format `audit_fix_*.csv` you can feed back through price-file mode. Writes nothing to Cin7/simPRO/Shopify. |
+| **Audit (priced only)** (utility) | `--audit priced` on the command line | Same as the audit, but skips the unpriced (old-markup) backlog — same effect as `AUDIT_SKIP_UNPRICED: True`. |
+| **Retry** (utility) | `--retry last` on the command line | Re-runs only the SKUs that failed/​errored in a previous run's log. Add `--allow-decreases` to push through cost reductions the guard held (see §1). |
 | **Reactivate** (utility) | `--reactivate last` on the command line | Undoes a deprecation run — sets the retired products back to their previous status. |
 
 These are deliberately **separate runs**. A normal price update never deprecates anything, so a partial or test file can't accidentally retire live products. Doing a full refresh from a new supplier list is two runs: one to update + create, then one to deprecate.
@@ -34,7 +36,15 @@ The file can carry a few **optional columns** that are picked up automatically w
 - **Barcode** — written to Cin7's Barcode field (this is where Cin7 stores the GTIN/EAN; there's no separate GTIN field). Controlled by `ATTRIBUTE_FILL_MODE`:
   - `overwrite` (default) — the file always wins.
   - `fill_blank` — only set the barcode when Cin7's existing value is empty.
+- **MarkUpMultiplier** — overrides the product's existing `AdditionalAttribute2` for this run's tier maths. A valid positive number on the row drives the ladder (floored at 2); a non-numeric value is ignored with a warning and the existing multiplier is used.
 - **Category, Brand, CostingMethod, Discount, Supplier** — only used when a SKU has to be **created** (see below). Blank cells are ignored; nothing is overwritten with a blank.
+
+### Cost-decrease guard (`BLOCK_COST_DECREASES`)
+A backstop against a mis-keyed or mis-sorted file quietly **lowering** live prices. With `BLOCK_COST_DECREASES: True` (recommended), any SKU whose **new** file cost is below the **old** cost already in Cin7 is **held** — nothing is written for it (no cost, no tiers, no simPRO/Shopify) and it's logged with Action `skipped_cost_decrease` for review. `COST_DECREASE_TOLERANCE` (pounds) lets small rounding drops through; only a larger reduction is held. Increases and unchanged lines apply as normal. It only guards products that already have a supplier cost in Cin7 — new products and uplift mode are unaffected. After reviewing the held lines, push the genuine ones through with:
+
+```bash
+python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
+```
 
 ### For each SKU
 1. **Fetches the product live from Cin7** — its existing cost, multiplier (`AdditionalAttribute2`), current Tier 10 and supplier rows. So it always works against real-time data, not a snapshot.
@@ -56,10 +66,11 @@ New products need more than a price, so the create pulls from the optional file 
 Use it when a manufacturer announces "all prices up 5%" and you've no tidy file to paste in.
 
 - **No price file.** It finds the products from `BRAND_FILTER` and/or `CATEGORY_FILTER` and lifts each by `UPLIFT_PERCENT`. It **refuses to run if both filters are blank** (so you can't uplift the whole catalogue) and refuses if `UPLIFT_PERCENT` isn't positive.
-- **Finding the products.** Cin7's product API ignores brand/category filters, so the script pulls the full product list once (~2–3 min), caches a lightweight index (SKU, name, brand, category) to `catalogue_index.json`, and filters locally. After the first build, runs are effectively instant until the cache is older than `CATALOGUE_MAX_AGE_HOURS` (default 24), then it rebuilds itself. `REFRESH_CATALOGUE: True` forces a rebuild next run. The "Bathroom Brands" grouping is skipped when `EXCLUDE_BATHROOM_BRANDS` is on, so you don't sweep the 70k+ dropship lines.
+- **Finding the products.** Cin7's product API ignores brand/category filters, so the script pulls the full product list once (~7 min), caches a lightweight index (SKU, name, brand, category) to `catalogue_index.json`, and filters locally. After the first build, runs are effectively instant until the cache is older than `CATALOGUE_MAX_AGE_HOURS` (default 24), then it rebuilds itself. `REFRESH_CATALOGUE: True` forces a rebuild next run. The "Bathroom Brands" grouping is skipped when `EXCLUDE_BATHROOM_BRANDS` is on, so you don't sweep the 70k+ dropship lines.
 - **If your category filter finds nothing**, it lists every category that brand actually uses (with counts) so you can copy the exact one — categories are often brand-prefixed (e.g. `Carron Baths`, not a flat `Bath Panels`).
 - **What it does to each price.** It lifts the existing Tier 10 by your percentage and rebuilds the ladder from that anchor — deliberately **bypassing the ratchet**, since an uplift is an intentional increase. Because every tier is a straight multiple of the anchor, all ten tiers plus the simPRO and Shopify prices move by exactly your percentage. A product with no existing Tier 10 is skipped and noted.
 - **Supplier (buy) cost.** Held by default (`UPLIFT_SUPPLIER_COST: False`) — it moves your selling prices now; you update the real buy cost when the actual price file arrives. Set it `True` to raise the supplier cost by the same percentage. Either way, running the real price file later won't stack a second increase: the price-file ratchet holds the already-uplifted prices.
+- **Double-run guard (`UPLIFT_GUARD`).** On by default. Before applying, the script fetches live prices and **skips** any product whose Tier 10 already sits above what its supplier cost justifies (i.e. already uplifted), so a re-run can't stack a second increase. Set `UPLIFT_GUARD: False` to skip the check. On products with more than one supplier, `UPLIFT_DEFAULT_SUPPLIER` names the supplier to measure against; blank = each product's highest-priced supplier.
 
 ---
 
@@ -90,22 +101,42 @@ If a deprecation run was wrong, `--reactivate last` reads the newest undo file a
 
 ---
 
+## 4. Tier audit (`AUDIT_MODE: True`, or `--audit`)
+
+A **read-only** health check. It never writes to Cin7, simPRO or Shopify — it just tells you where your live tiers have drifted from what the supplier cost should produce.
+
+- **What it does.** Scans the catalogue (honouring the `BRAND_FILTER` / `CATEGORY_FILTER` scope in SCOPE; blank = whole catalogue) and flags every product whose tiers don't match the recalculated ladder for its current cost.
+- **What it writes.** Two files: a diagnostic CSV listing the mismatches, and a **Sheet1-format `audit_fix_*.csv`** containing just the drifted products — copy that onto `Sheet1.csv` and run price-file mode to correct them.
+- **Tolerance.** A tier is only flagged when it's off by **both** `AUDIT_TOLERANCE_PERCENT` *and* `AUDIT_TOLERANCE_PENCE` at once, so penny rounding is never reported; genuine drift clears both bars.
+- **Skipping the backlog.** `AUDIT_SKIP_UNPRICED: True` (or adding `priced` after `--audit`) hides the unpriced old-markup products and reports only genuinely mispriced ones.
+
+**To apply an audit's fixes:** copy the newest `audit_fix_*.csv` onto `Sheet1.csv`, set `AUDIT_MODE: False`, dry-run, then run live. (Leave `CREATE_MISSING: False` — an audit_fix file only lists products that already exist.)
+
+---
+
 ## Utility runs (command line)
 
 ```bash
-# Normal run — mode is whatever Config.txt selects (price-file / uplift / deprecate)
+# Normal run — mode is whatever Config.txt selects (price-file / uplift / deprecate / audit)
 python PriceUpdaterWithPauseSwitch.py
+
+# Read-only tier audit (same as AUDIT_MODE: True); add 'priced' to skip the unpriced backlog
+python PriceUpdaterWithPauseSwitch.py --audit
+python PriceUpdaterWithPauseSwitch.py --audit priced
 
 # Retry only the SKUs that failed in the most recent log (or a named log)
 python PriceUpdaterWithPauseSwitch.py --retry last
 python PriceUpdaterWithPauseSwitch.py --retry price_update_log_20260620_112714.csv
+
+# Retry, allowing through the cost reductions the decrease-guard held
+python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
 
 # Undo the most recent deprecation run (or a named undo file)
 python PriceUpdaterWithPauseSwitch.py --reactivate last
 python PriceUpdaterWithPauseSwitch.py --reactivate deprecate_undo_20260620_180203.csv
 ```
 
-**Retry** reads a previous run's log, pulls out the SKUs that errored or were interrupted, re-runs only those against the current file/scope, and writes its own `*_retry_log_*.csv`. Failed SKUs that are no longer in the current input are reported so they aren't lost silently.
+**Retry** reads a previous run's log, pulls out the SKUs that errored or were interrupted, re-runs only those against the current file/scope, and writes its own `*_retry_log_*.csv`. Failed SKUs that are no longer in the current input are reported so they aren't lost silently. **`--allow-decreases`** (alias `--allow-cost-decreases`) lifts the cost-decrease guard for that run, so genuine reductions held as `skipped_cost_decrease` are applied.
 
 ---
 
@@ -129,6 +160,7 @@ Product names are cleaned the same way throughout (encoding fixes, unit casing, 
 - **Zapier-paused prompt** reminds you to switch the sync Zap(s) off before a live bulk run and asks you to confirm (toggle with `ZAP_PAUSE_PROMPT`).
 - **Pre-flight summary + confirmation** before every live run — a `[Y/N]` for price-file/create runs, a typed `CONFIRM` for uplift and deprecate runs.
 - **Dry-run** everywhere — preview lines (and, for deprecate, the full HELD / WILL DEPRECATE lists) with nothing written.
+- **Cost-decrease guard** (`BLOCK_COST_DECREASES`) — holds any file row that would lower a product's live cost/price, so a mis-keyed or mis-sorted file can't quietly drop prices; reviewed reductions go through with `--allow-decreases`.
 - **Pause switch** — Ctrl+C mid-run lets you retry the current SKU or quit cleanly, with the log saved for everything done so far.
 
 ---
@@ -158,6 +190,17 @@ Product names are cleaned the same way throughout (encoding fixes, unit casing, 
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `ATTRIBUTE_FILL_MODE` | `overwrite` | `overwrite` or `fill_blank` for optional columns (Barcode). |
+| `BLOCK_COST_DECREASES` | `True` | Hold any SKU whose new file cost is below Cin7's existing cost (writes nothing, logs `skipped_cost_decrease`). Override a reviewed run with `--allow-decreases`. |
+| `COST_DECREASE_TOLERANCE` | `0.02` | Rounding slack (pounds) — a drop within this is let through; only a larger reduction is held. |
+
+**Tier audit (`AUDIT_MODE` / `--audit`)**
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `AUDIT_MODE` | `False` | Run the read-only tier audit instead of an update (same as `--audit`). |
+| `AUDIT_SKIP_UNPRICED` | `False` | Report only genuinely mispriced products, hiding the unpriced old-markup backlog (same as `--audit priced`). |
+| `AUDIT_TOLERANCE_PERCENT` | `1` | A tier must be off by at least this percent **and** the pence figure below to be flagged. |
+| `AUDIT_TOLERANCE_PENCE` | `2` | …and by at least this many pence — so penny rounding is never flagged. |
 
 **Create (`CREATE_MISSING`)**
 
@@ -172,6 +215,7 @@ Product names are cleaned the same way throughout (encoding fixes, unit casing, 
 | `NEW_PRODUCT_PURCHASE_TAX_RULE` / `_SALE_TAX_RULE` | `20% (VAT on Expenses)` / `20% (VAT on Income)` | Must match your Cin7 Taxation Rules reference book character-for-character (note the parentheses). |
 | `NEW_PRODUCT_ATTRIBUTE_SET` | `Product Details` | Attribute set to assign. |
 | `NEW_PRODUCT_MULTIPLIER` | `2` | Pricing multiplier for new products. |
+| `NEW_PRODUCT_DROPSHIP` | `No Drop Ship` | Drop-ship setting applied to new products. |
 | `NEW_PRODUCT_DEFAULT_CATEGORY` / `_DEFAULT_BRAND` / `_DISCOUNT` | *(blank)* | Fallbacks when the file row leaves them blank. |
 | `NEW_PRODUCT_SUPPLIER` | *(blank)* | Existing Cin7 supplier to attach the buy cost to. Blank = no supplier row. |
 
@@ -182,6 +226,8 @@ Product names are cleaned the same way throughout (encoding fixes, unit casing, 
 | `UPLIFT_MODE` | `False` | Turn on uplift mode. |
 | `UPLIFT_PERCENT` | `0` | Percentage increase (must be > 0). |
 | `UPLIFT_SUPPLIER_COST` | `False` | Also raise the buy cost by the same %. |
+| `UPLIFT_GUARD` | `True` | Skip products already sitting above what their cost justifies, so a re-run can't stack a second increase. |
+| `UPLIFT_DEFAULT_SUPPLIER` | *(blank)* | On multi-supplier products, the supplier to measure the guard against. Blank = the highest-priced supplier. |
 
 **Deprecate (`DEPRECATE_MODE`)**
 
