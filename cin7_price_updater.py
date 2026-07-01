@@ -11,13 +11,13 @@
 #   Optional extra columns (Phase 1): add any column listed in ATTRIBUTE_COLUMN_MAP
 #   below and its value is written to the matching Cin7 field. "Barcode" is where
 #   Cin7 stores the GTIN/EAN. Blank cells are left untouched. ATTRIBUTE_FILL_MODE
-#   (Config.txt) decides whether the file may overwrite a value Cin7 already has.
+#   (Config.yaml) decides whether the file may overwrite a value Cin7 already has.
 #   e.g.  SKU, Name, Cost, Barcode
 #
-#   Creating products (Phase 2): set CREATE_MISSING: True in Config.txt and any SKU
+#   Creating products (Phase 2): set CREATE_MISSING: True in Config.yaml and any SKU
 #   in the file that isn't found in Cin7 is CREATED (file mode only). New products
 #   take Type / Costing / UOM / Location / accounts / tax / attribute set from the
-#   NEW_PRODUCT_* settings in Config.txt; per-row Category, Brand, Barcode,
+#   NEW_PRODUCT_* settings in Config.yaml; per-row Category, Brand, Barcode,
 #   CostingMethod ("Serial" for serial-tracked boilers) and Discount can be columns.
 #   Category is required — supply a column or set NEW_PRODUCT_DEFAULT_CATEGORY.
 #   e.g.  SKU, Name, Cost, Category, Brand, Barcode, CostingMethod
@@ -29,16 +29,16 @@
 #   4. If the preview looks correct, set DRY_RUN = False and run again to go live
 #
 # Retry mode (rerun only the SKUs that errored last time):
-#   python PriceUpdaterWithPauseSwitch.py --retry          (retries the most recent log)
-#   python PriceUpdaterWithPauseSwitch.py --retry last     (same as above)
-#   python PriceUpdaterWithPauseSwitch.py --retry <logfile.csv>
+#   python cin7_price_updater.py --retry          (retries the most recent log)
+#   python cin7_price_updater.py --retry last     (same as above)
+#   python cin7_price_updater.py --retry <logfile.csv>
 #   - Reads the chosen log, collects every SKU whose Success was False, and reruns
 #     only those. It re-reads the SAME source (price file or uplift filter) so the
 #     cost and any attribute columns are faithful — failed SKUs no longer in the
 #     source are reported and skipped. Writes its own price_update_retry_log_... file.
 #
 # Applying held cost decreases (the cost-decrease guard skipped them for review):
-#   python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
+#   python cin7_price_updater.py --retry last --allow-decreases
 #   - Reruns the SKUs held as 'skipped_cost_decrease' and, for THIS run only, lets
 #     genuine cost reductions through. Review the held lines in the log first. The
 #     flag is not saved anywhere, so the guard is back on automatically next run.
@@ -107,7 +107,7 @@ ATTRIBUTE_COLUMN_MAP = {
 
 
 # ==============================================================================
-# SECTION 01b — Config (loaded from Config.txt)
+# SECTION 01b — Config (loaded from Config.yaml)
 # ==============================================================================
 
 def _parse_bool(value, default=True):
@@ -129,9 +129,9 @@ def _parse_decimal(value, default="0"):
     except Exception:
         return Decimal(default)
 
-def _load_config(filepath="Config.txt"):
+def _load_config(filepath="Config.yaml"):
     if not os.path.exists(filepath):
-        print(f"WARNING: Config.txt not found — using hardcoded defaults.")
+        print(f"WARNING: Config.yaml not found — using hardcoded defaults.")
         return {}
     cfg = {}
     with open(filepath, "r", encoding="utf-8") as f:
@@ -145,7 +145,7 @@ def _load_config(filepath="Config.txt"):
             cfg[key.strip()] = value.strip()
     return cfg
 
-_cfg = _load_config(os.path.join(SCRIPT_DIR, "Config.txt"))
+_cfg = _load_config(os.path.join(SCRIPT_DIR, "Config.yaml"))
 
 DRY_RUN            = _parse_bool(_cfg.get("DRY_RUN", "True"))
 RATE_LIMIT_PER_MIN = int(_cfg.get("RATE_LIMIT_PER_MIN", "55"))
@@ -159,14 +159,14 @@ UPDATE_SHOPIFY     = _parse_bool(_cfg.get("UPDATE_SHOPIFY", "False"))
 # quietly lower costs/prices. A held line writes NOTHING to Cin7/simPRO/Shopify;
 # it is logged as a failure with Action 'skipped_cost_decrease' so it lands in the
 # retry set. Review the held lines, and if the reductions are genuine push just
-# those through with:   python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
+# those through with:   python cin7_price_updater.py --retry last --allow-decreases
 # COST_DECREASE_TOLERANCE is a small £ slack so penny rounding never trips the guard.
 BLOCK_COST_DECREASES    = _parse_bool(_cfg.get("BLOCK_COST_DECREASES", "True"))
 COST_DECREASE_TOLERANCE = _parse_decimal(_cfg.get("COST_DECREASE_TOLERANCE", "0.02"), "0.02")
 # Set True by the --allow-decreases command-line flag (see _parse_allow_decreases).
 ALLOW_COST_DECREASES    = False
 
-# Filters / scope (previously in Config.txt but unused — now read for uplift mode).
+# Filters / scope (previously in Config.yaml but unused — now read for uplift mode).
 # File mode ignores these, so its behaviour is unchanged.
 EXCLUDE_BATHROOM_BRANDS = _parse_bool(_cfg.get("EXCLUDE_BATHROOM_BRANDS", "True"))
 BRAND_FILTER            = _cfg.get("BRAND_FILTER", "").strip()
@@ -216,7 +216,7 @@ AUDIT_SKIP_UNPRICED = _parse_bool(_cfg.get("AUDIT_SKIP_UNPRICED", "False"))
 # while migrating markup-priced products one at a time). False = skip that call,
 # which saves one Cin7 call per product. Default True so an older Config without
 # this key keeps the safe behaviour; set False (and clear markup in bulk yourself)
-# when you want the faster run. See REMOVE_MARKUP_PRICES note in Config.txt.
+# when you want the faster run. See REMOVE_MARKUP_PRICES note in Config.yaml.
 REMOVE_MARKUP_PRICES = _parse_bool(_cfg.get("REMOVE_MARKUP_PRICES", "True"))
 
 # How file attributes (Barcode etc.) are applied when Cin7 already has a value:
@@ -228,7 +228,7 @@ if ATTRIBUTE_FILL_MODE not in ("overwrite", "fill_blank"):
 
 # Before any LIVE run, prompt to confirm the Zapier sync Zap(s) are turned OFF,
 # so a bulk update doesn't fire single-update Zaps for every changed product.
-# Set ZAP_PAUSE_PROMPT: False in Config.txt to skip it. ZAP_NAME just labels the
+# Set ZAP_PAUSE_PROMPT: False in Config.yaml to skip it. ZAP_NAME just labels the
 # message so it reads as the actual Zap you need to pause.
 ZAP_PAUSE_PROMPT = _parse_bool(_cfg.get("ZAP_PAUSE_PROMPT", "True"))
 ZAP_NAME = _cfg.get("ZAP_NAME", "Cin7 sync Zap(s)").strip() or "Cin7 sync Zap(s)"
@@ -1701,7 +1701,7 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
             if not new_category:
                 raise ValueError(
                     f"Cannot create '{sku}': no Category — add a Category column to the "
-                    f"file or set NEW_PRODUCT_DEFAULT_CATEGORY in Config.txt")
+                    f"file or set NEW_PRODUCT_DEFAULT_CATEGORY in Config.yaml")
             new_brand    = (cf.get("Brand") or NEW_PRODUCT_DEFAULT_BRAND).strip()
             new_barcode  = (cf.get("Barcode") or (file_attrs or {}).get("Barcode") or "").strip()
             new_costing  = resolve_costing_method(cf.get("CostingMethod"))
@@ -2201,10 +2201,10 @@ def _parse_retry_arg():
     """Detect retry mode from the command line.
 
     Usage:
-        python PriceUpdaterWithPauseSwitch.py                 -> normal run
-        python PriceUpdaterWithPauseSwitch.py --retry         -> retry the latest log
-        python PriceUpdaterWithPauseSwitch.py --retry last    -> retry the latest log
-        python PriceUpdaterWithPauseSwitch.py --retry <file>  -> retry a named log
+        python cin7_price_updater.py                 -> normal run
+        python cin7_price_updater.py --retry         -> retry the latest log
+        python cin7_price_updater.py --retry last    -> retry the latest log
+        python cin7_price_updater.py --retry <file>  -> retry a named log
 
     Returns (retry_mode: bool, log_path: str | None).
     """
@@ -2276,7 +2276,7 @@ def confirm_typed(proceed_word="CONFIRM"):
 def confirm_zap_paused():
     """Live-run safety: remind the operator to pause the Zapier sync Zap(s) before
     a bulk update fires single-update Zaps for every changed product. Returns True
-    to proceed, False to abort. Skipped when ZAP_PAUSE_PROMPT is off in Config.txt."""
+    to proceed, False to abort. Skipped when ZAP_PAUSE_PROMPT is off in Config.yaml."""
     if not ZAP_PAUSE_PROMPT:
         return True
     print()
@@ -2438,7 +2438,7 @@ def run_deprecate_mode():
         print("\nERROR: DEPRECATE_MODE is on but BRAND_FILTER is blank.")
         print("This routine retires every product in a brand that isn't in the price")
         print("file. With no brand it would deprecate almost your entire catalogue.")
-        print("Set BRAND_FILTER in Config.txt to the single brand this file covers.")
+        print("Set BRAND_FILTER in Config.yaml to the single brand this file covers.")
         return
 
     # --- Guard 2: the 'keep' list — every SKU in the supplier file ---
@@ -2833,11 +2833,11 @@ def main():
         # ---- Manufacturer uplift mode: no price file, enumerate by filter ----
         if not BRAND_FILTER and not CATEGORY_FILTER:
             print("\nERROR: UPLIFT_MODE is on but both BRAND_FILTER and CATEGORY_FILTER are blank.")
-            print("Refusing to uplift the entire catalogue. Set a brand and/or category in Config.txt.")
+            print("Refusing to uplift the entire catalogue. Set a brand and/or category in Config.yaml.")
             return
         if UPLIFT_PERCENT <= 0:
             print(f"\nERROR: UPLIFT_MODE is on but UPLIFT_PERCENT is {UPLIFT_PERCENT}.")
-            print("Set a positive percentage in Config.txt (e.g. UPLIFT_PERCENT: 5).")
+            print("Set a positive percentage in Config.yaml (e.g. UPLIFT_PERCENT: 5).")
             return
 
         scope_bits = []

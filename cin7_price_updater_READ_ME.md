@@ -1,5 +1,5 @@
 # Targeted Repricing, Creation & Deprecation Tool
-### `PriceUpdaterWithPauseSwitch.py`
+### `cin7_price_updater.py`
 
 This is the sister script to the alignment one — same plumbing, same pause switch, but a different job. Where the alignment script recalculates your **whole** catalogue from exports and only touches what's drifted, this one works on **targeted items**: it reprices them, can create ones that don't exist yet, and can retire ones that have dropped off a supplier's range.
 
@@ -9,7 +9,7 @@ Everything shares the same recalculation formulas, the same detailed audit notes
 
 ## The jobs this script does
 
-There are four "modes" plus three command-line utilities. You pick a mode in `Config.txt`; the utilities are triggered from the command line.
+There are four "modes" plus three command-line utilities. You pick a mode in `Config.yaml`; the utilities are triggered from the command line.
 
 | Job | How you turn it on | What it does |
 |-----|--------------------|--------------|
@@ -43,7 +43,7 @@ The file can carry a few **optional columns** that are picked up automatically w
 A backstop against a mis-keyed or mis-sorted file quietly **lowering** live prices. With `BLOCK_COST_DECREASES: True` (recommended), any SKU whose **new** file cost is below the **old** cost already in Cin7 is **held** — nothing is written for it (no cost, no tiers, no simPRO/Shopify) and it's logged with Action `skipped_cost_decrease` for review. `COST_DECREASE_TOLERANCE` (pounds) lets small rounding drops through; only a larger reduction is held. Increases and unchanged lines apply as normal. It only guards products that already have a supplier cost in Cin7 — new products and uplift mode are unaffected. After reviewing the held lines, push the genuine ones through with:
 
 ```bash
-python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
+python cin7_price_updater.py --retry last --allow-decreases
 ```
 
 ### For each SKU
@@ -55,7 +55,7 @@ python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
 ### Creating products that don't exist yet (`CREATE_MISSING`)
 With `CREATE_MISSING: True`, a SKU in the file that **isn't found in Cin7** is **created** instead of erroring, then the normal update path layers the supplier cost, prices and note on top. A new product is priced **identically to an update** (cost × multiplier).
 
-New products need more than a price, so the create pulls from the optional file columns first and falls back to the `NEW_PRODUCT_*` defaults in `Config.txt` for the rest: type (Stock), costing method (FIFO), UOM, default location, the inventory/COGS/revenue account codes, the purchase/sale tax rules, the attribute set, and the multiplier.
+New products need more than a price, so the create pulls from the optional file columns first and falls back to the `NEW_PRODUCT_*` defaults in `Config.yaml` for the rest: type (Stock), costing method (FIFO), UOM, default location, the inventory/COGS/revenue account codes, the purchase/sale tax rules, the attribute set, and the multiplier.
 
 > **Names must match Cin7 exactly.** Category, account codes, the attribute set and especially the **tax rules** must match your Cin7 reference books character-for-character, or Cin7 rejects the create with a precise validation error. The tax rules in particular include parentheses — e.g. `20% (VAT on Expenses)` / `20% (VAT on Income)`. The safe approach is to prove a **single** create first; the first one surfaces any name mismatch before a batch.
 
@@ -117,23 +117,23 @@ A **read-only** health check. It never writes to Cin7, simPRO or Shopify — it 
 ## Utility runs (command line)
 
 ```bash
-# Normal run — mode is whatever Config.txt selects (price-file / uplift / deprecate / audit)
-python PriceUpdaterWithPauseSwitch.py
+# Normal run — mode is whatever Config.yaml selects (price-file / uplift / deprecate / audit)
+python cin7_price_updater.py
 
 # Read-only tier audit (same as AUDIT_MODE: True); add 'priced' to skip the unpriced backlog
-python PriceUpdaterWithPauseSwitch.py --audit
-python PriceUpdaterWithPauseSwitch.py --audit priced
+python cin7_price_updater.py --audit
+python cin7_price_updater.py --audit priced
 
 # Retry only the SKUs that failed in the most recent log (or a named log)
-python PriceUpdaterWithPauseSwitch.py --retry last
-python PriceUpdaterWithPauseSwitch.py --retry price_update_log_20260620_112714.csv
+python cin7_price_updater.py --retry last
+python cin7_price_updater.py --retry price_update_log_20260620_112714.csv
 
 # Retry, allowing through the cost reductions the decrease-guard held
-python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
+python cin7_price_updater.py --retry last --allow-decreases
 
 # Undo the most recent deprecation run (or a named undo file)
-python PriceUpdaterWithPauseSwitch.py --reactivate last
-python PriceUpdaterWithPauseSwitch.py --reactivate deprecate_undo_20260620_180203.csv
+python cin7_price_updater.py --reactivate last
+python cin7_price_updater.py --reactivate deprecate_undo_20260620_180203.csv
 ```
 
 **Retry** reads a previous run's log, pulls out the SKUs that errored or were interrupted, re-runs only those against the current file/scope, and writes its own `*_retry_log_*.csv`. Failed SKUs that are no longer in the current input are reported so they aren't lost silently. **`--allow-decreases`** (alias `--allow-cost-decreases`) lifts the cost-decrease guard for that run, so genuine reductions held as `skipped_cost_decrease` are applied.
@@ -165,7 +165,7 @@ Product names are cleaned the same way throughout (encoding fixes, unit casing, 
 
 ---
 
-## Configuration reference (`Config.txt`)
+## Configuration reference (`Config.yaml`)
 
 **Core**
 

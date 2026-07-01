@@ -1,11 +1,11 @@
 # Cin7 — Update From Price Files — Manifest
 
-**Tool:** `PriceUpdaterWithPauseSwitch.py` — targeted repricing, product creation, deprecation & a read-only tier audit for Cin7 Core (DEAR), with sync out to simPRO and Shopify.
+**Tool:** `cin7_price_updater.py` — targeted repricing, product creation, deprecation & a read-only tier audit for Cin7 Core (DEAR), with sync out to simPRO and Shopify.
 **Owner:** RHS Group Ltd, trading as KPS (Knaresborough Plumbing Supplies)
 **Location:** `C:\Python\Cin7 Product Updaters\Cin7 - Update from Price Files`
 **Snapshot date:** 30 June 2026
 
-> Top-level index for this tool. Deeper detail lives in the tool's own `ReadMe.md`.
+> Top-level index for this tool. Deeper detail lives in the tool's own `cin7_price_updater_read_me.md`.
 
 ---
 
@@ -17,7 +17,7 @@ Reads a **price file** and, for each SKU, recalculates prices from cost and writ
 2. **simPRO** — syncs the catalogue trade price and the RHS Group vendor nett price.
 3. **Shopify** — sets the variant price, compare-at price, and (new) barcode.
 
-Price-file update is the primary workflow. The same script also has **uplift**, **deprecate**, and a read-only **tier audit** mode, selected via `Config.txt` (the audit, retry and reactivate jobs can also be triggered by command-line switch).
+Price-file update is the primary workflow. The same script also has **uplift**, **deprecate**, and a read-only **tier audit** mode, selected via `Config.yaml` (the audit, retry and reactivate jobs can also be triggered by command-line switch).
 
 ---
 
@@ -25,14 +25,14 @@ Price-file update is the primary workflow. The same script also has **uplift**, 
 
 | File | Purpose |
 |---|---|
-| `PriceUpdaterWithPauseSwitch.py` | The tool (~3,241 lines). |
-| `Config.txt` | All settings — **plain `KEY: value`** text (not JSON). Mode flags, write toggles, fill mode, cost-decrease guard, new-product defaults. |
+| `cin7_price_updater.py` | The tool (~3,241 lines). |
+| `Config.yaml` | All settings — **plain `KEY: value`** text (not JSON). Mode flags, write toggles, fill mode, cost-decrease guard, new-product defaults. |
 | `Credentials.txt` | Shared credentials (Cin7 / simPRO / Shopify). **Not in this folder** — git-ignored; kept locally/externally. |
 | `Sheet1.csv` | The day-to-day price-file input (default `PRICE_FILE_PATH`); `Sheet1Test.csv` is a test copy. See §4. |
 | `audit_fix_*.csv` | A Sheet1-format re-price file produced by an audit run; copy onto `Sheet1.csv` to apply the fixes. |
 | `catalogue_index.json` | Cached lightweight catalogue (SKU/name/brand/category) for uplift & audit scoping; auto-rebuilt past `CATALOGUE_MAX_AGE_HOURS`. |
 | `LowerCaseWords.txt` / `UpperCaseWords.txt` | Word-casing reference lists for the name-cleaning step. |
-| `ReadMe.md` | Full tool documentation. |
+| `cin7_price_updater_read_me.md` | Full tool documentation. |
 | `Logs/` | Timestamped run-log CSVs (`price_update_log_*`, `*_retry_log_*`, `deprecate_log_*`, `deprecate_undo_*`, `tier_audit_*`). |
 | `Helpers/`, `Debug/` | Standalone probe / speed-test / Shopify debug scripts. |
 
@@ -40,9 +40,9 @@ Price-file update is the primary workflow. The same script also has **uplift**, 
 
 ---
 
-## 3. Configuration (`Config.txt`, plain `KEY: value`)
+## 3. Configuration (`Config.yaml`, plain `KEY: value`)
 
-Precedence: **command-line flag → `Config.txt` → in-script default.**
+Precedence: **command-line flag → `Config.yaml` → in-script default.**
 
 Key switches:
 
@@ -94,7 +94,7 @@ simPRO base `https://mjryder.simprosuite.com`; supplier name `RHS Group Ltd`.
 
 ## 7. How to run
 
-1. Set the price-file path and the `UPDATE_*` / mode flags in `Config.txt`.
+1. Set the price-file path and the `UPDATE_*` / mode flags in `Config.yaml`.
 2. **Pause the Cin7→simPRO sync Zap** (the script prompts to confirm) so the script and the Zap don't double-handle.
 3. **Dry-run first** (`DRY_RUN`) and review the preview / run-log.
 4. Run live. Check the run-log CSV; use the retry / reactivate utilities for any failures.

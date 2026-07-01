@@ -108,7 +108,7 @@ REMOVE_MARKUP_PRICES: False
 #   True  = hold cost reductions for review  [recommended]
 #   False = apply cost reductions without holding
 # After reviewing the held lines, push the genuine ones through with:
-#     python PriceUpdaterWithPauseSwitch.py --retry last --allow-decreases
+#     python cin7_price_updater.py --retry last --allow-decreases
 BLOCK_COST_DECREASES: True
 
 # Rounding slack, in pounds. A drop within this much is treated as rounding and let
