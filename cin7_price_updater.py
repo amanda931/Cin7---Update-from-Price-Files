@@ -153,6 +153,29 @@ UPDATE_CIN7        = _parse_bool(_cfg.get("UPDATE_CIN7", "True"))
 UPDATE_SIMPRO      = _parse_bool(_cfg.get("UPDATE_SIMPRO", "True"))
 UPDATE_SHOPIFY     = _parse_bool(_cfg.get("UPDATE_SHOPIFY", "False"))
 
+# Channel pricing ---------------------------------------------------------------
+# Which Cin7 tier each channel prices from — decouples Shopify from simPRO.
+# Defaults reproduce the original behaviour (both channels priced off Tier4,
+# Shopify discounted 40% like simPRO), so an older Config without these keys
+# runs exactly as before.
+#   simPRO price       = SIMPRO_PRICE_TIER x (1 - max(40%, product DiscountRule))
+#   Shopify price      = SHOPIFY_PRICE_TIER x (1 - SHOPIFY_DISCOUNT_PERCENT)
+#   Shopify compare-at = SHOPIFY_COMPARE_AT_TIER (full price, no discount)
+# Note: Shopify's discount is a FLAT config value — deliberately independent of
+# the per-product DiscountRule, which remains a simPRO/trade concept.
+def _parse_tier(value, default):
+    """Normalise 'Tier4' / 'tier 4' / '4' to 'Tier4'; fall back to default."""
+    m = re.search(r"(10|[1-9])", str(value))
+    return f"Tier{m.group(1)}" if m else default
+
+SIMPRO_PRICE_TIER        = _parse_tier(_cfg.get("SIMPRO_PRICE_TIER", "Tier4"), "Tier4")
+SHOPIFY_PRICE_TIER       = _parse_tier(_cfg.get("SHOPIFY_PRICE_TIER", "Tier4"), "Tier4")
+SHOPIFY_COMPARE_AT_TIER  = _parse_tier(_cfg.get("SHOPIFY_COMPARE_AT_TIER", "Tier4"), "Tier4")
+SHOPIFY_DISCOUNT_PERCENT = _parse_decimal(_cfg.get("SHOPIFY_DISCOUNT_PERCENT", "40"), "40")
+if not (Decimal("0") <= SHOPIFY_DISCOUNT_PERCENT <= Decimal("99")):
+    print(f"WARNING: SHOPIFY_DISCOUNT_PERCENT {SHOPIFY_DISCOUNT_PERCENT} out of range 0-99 — using 40.")
+    SHOPIFY_DISCOUNT_PERCENT = Decimal("40")
+
 # Cost-decrease guard ----------------------------------------------------------
 # Hold (skip) any SKU whose new supplier cost is materially BELOW the old cost, so
 # a mis-keyed price file (e.g. a sort that de-synced the discount column) can't
@@ -1579,8 +1602,9 @@ def simpro_update_catalog_vendor(token, catalog_id, vendor_id, vendor_name,
 # ==============================================================================
 # SECTION 10 — Shopify API Functions
 # Finds a Shopify product variant by SKU and updates price and compare_at_price.
-#   price            = Tier4 minus discount rule (same as simPRO price)
-#   compare_at_price = Tier4 (full price before discount)
+#   price            = SHOPIFY_PRICE_TIER minus SHOPIFY_DISCOUNT_PERCENT (flat)
+#   compare_at_price = SHOPIFY_COMPARE_AT_TIER (full price before discount)
+# Both tiers and the discount are set in Config.yaml, independent of simPRO.
 # ==============================================================================
 
 def shopify_find_variant_by_sku(sku):
@@ -1901,12 +1925,20 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
 
         supplier_fixed_price = to_float(money(cost * Decimal("2")))
 
-        # simPRO price = Tier4 minus discount rule (minimum 40%)
+        # simPRO price = configured tier minus discount rule (minimum 40%)
         discount_rule    = parse_percent(product.get("DiscountRule"), 0)
         discount_used    = max(Decimal("40"), discount_rule)
-        simpro_price     = money(Decimal(str(tiers["Tier4"])) * (Decimal("1") - discount_used / Decimal("100")))
+        simpro_price     = money(Decimal(str(tiers[SIMPRO_PRICE_TIER])) * (Decimal("1") - discount_used / Decimal("100")))
         simpro_price_f   = to_float(simpro_price)
         result["SimproNewPrice"] = simpro_price_f
+
+        # Shopify price = its own configured tier minus its own flat discount;
+        # compare-at = its own configured tier, undiscounted. Fully independent
+        # of simPRO and of the per-product DiscountRule.
+        shopify_price        = money(Decimal(str(tiers[SHOPIFY_PRICE_TIER]))
+                                     * (Decimal("1") - SHOPIFY_DISCOUNT_PERCENT / Decimal("100")))
+        shopify_price_f      = to_float(shopify_price)
+        shopify_compare_at_f = tiers[SHOPIFY_COMPARE_AT_TIER]
 
         # --- Build Cin7 supplier payload with updated Cost ---
         supplier_payload = []
@@ -1995,11 +2027,12 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
         # --- Dry run: print preview and stop ---
         if DRY_RUN:
             print(f"  [DRY RUN] SKU {sku}: Cost \u00a3{old_cost} -> \u00a3{supplier_cost} "
-                  f"| Tier10: \u00a3{tiers['Tier10']} | Price: \u00a3{simpro_price_f} | Compare at: \u00a3{tiers['Tier4']}")
+                  f"| Tier10: \u00a3{tiers['Tier10']} | simPRO: \u00a3{simpro_price_f} "
+                  f"| Shopify: \u00a3{shopify_price_f} (compare at \u00a3{shopify_compare_at_f})")
             if attr_changes:
                 print(f"            Attributes: " + " | ".join(f"{k}: {v}" for k, v in attr_changes.items()))
-            result["ShopifyPrice"]          = simpro_price_f
-            result["ShopifyCompareAtPrice"] = tiers["Tier4"]
+            result["ShopifyPrice"]          = shopify_price_f
+            result["ShopifyCompareAtPrice"] = shopify_compare_at_f
             result["Success"] = True
             return result
 
@@ -2116,17 +2149,17 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
 
                 shopify_result = shopify_update_variant_price(
                     variant_id       = variant["id"],
-                    price            = simpro_price_f,
-                    compare_at_price = tiers["Tier4"],
+                    price            = shopify_price_f,
+                    compare_at_price = shopify_compare_at_f,
                     barcode          = barcode_to_set
                 )
                 if shopify_result.get("ok"):
                     result["ShopifyUpdated"]        = True
-                    result["ShopifyPrice"]          = simpro_price_f
-                    result["ShopifyCompareAtPrice"] = tiers["Tier4"]
+                    result["ShopifyPrice"]          = shopify_price_f
+                    result["ShopifyCompareAtPrice"] = shopify_compare_at_f
                     if barcode_to_set:
                         result["ShopifyBarcode"] = barcode_to_set
-                    shopify_status = (f"\u00a3{simpro_price_f}"
+                    shopify_status = (f"\u00a3{shopify_price_f}"
                                       + (f" +barcode {barcode_to_set}" if barcode_to_set else ""))
                 else:
                     result["Error"] = f"Shopify: {shopify_result.get('error', '')}"

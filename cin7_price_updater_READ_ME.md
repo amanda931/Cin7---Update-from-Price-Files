@@ -147,7 +147,8 @@ The same formulas across every mode:
 - **Tier 10** = new cost × multiplier ÷ 2 (multiplier floored at 2). In price-file mode the final Tier 10 is the **highest** of {new cost, existing Tier 10, proposed} — the ratchet. Uplift mode sets it directly from the uplifted anchor instead.
 - **Tiers 6–9** — a margin ladder above Tier 10 at 40 / 30 / 20 / 10%.
 - **Tiers 1–5** — roughly double Tier 10 with small uplifts (1 / 2 / 3 / 5 / 7.5%).
-- **simPRO / Shopify price** — Tier 4 with at least a 40% discount applied; **compare-at** price = Tier 4 itself.
+- **simPRO price** — `SIMPRO_PRICE_TIER` (default Tier 4) with at least a 40% discount applied (the product's DiscountRule still applies when deeper than 40%).
+- **Shopify price** — `SHOPIFY_PRICE_TIER` (default Tier 4) minus `SHOPIFY_DISCOUNT_PERCENT` (a flat percentage, default 40 — the per-product DiscountRule does **not** apply to Shopify); **compare-at** price = `SHOPIFY_COMPARE_AT_TIER` (default Tier 4). All three are set in Config.yaml, so Shopify is fully independent of simPRO — e.g. sell at Tier 9 with 0% discount and show Tier 5 as the was-price.
 
 Product names are cleaned the same way throughout (encoding fixes, unit casing, trade acronyms).
 

@@ -75,7 +75,8 @@ SKU, Name, Cost, Category, Brand, Barcode, CostingMethod
 ## 5. Pricing model
 
 - **Tier ladder:** `(cost × 2) × (1 + uplift%)`. Tier 4 = +5% (≈ ×2.10 of cost); Tier 5 = +7.5% (≈ ×2.15) — about **+2.4%** over Tier 4.
-- **simPRO / Shopify price** = `Tier4 × (1 − discount)`, where discount = `max(40%, the product's DiscountRule)`. Shopify compare-at = full Tier 4.
+- **simPRO price** = `SIMPRO_PRICE_TIER × (1 − discount)`, where discount = `max(40%, the product's DiscountRule)`. Default tier: Tier 4.
+- **Shopify price** = `SHOPIFY_PRICE_TIER × (1 − SHOPIFY_DISCOUNT_PERCENT)` — a flat config discount; DiscountRule does NOT apply. Compare-at = `SHOPIFY_COMPARE_AT_TIER`. Defaults: Tier 4 / Tier 4 / 40%, reproducing the old coupled behaviour.
 - Margins are worked in **gross margin** (profit on selling price), not markup.
 
 ---
@@ -118,9 +119,9 @@ simPRO base `https://mjryder.simprosuite.com`; supplier name `RHS Group Ltd`.
 - **Read-only tier audit** — `--audit` / `AUDIT_MODE` scans the catalogue, lists tier drift against expected prices, and writes both a diagnostic CSV and a Sheet1-format `audit_fix_*.csv` to feed back through a price-file run.
 - **Per-row `MarkUpMultiplier`** — a `MarkUpMultiplier` column overrides the product's existing `AdditionalAttribute2` for the tier maths (floor 2).
 - **Barcode now syncs to Shopify** — file `Barcode` → variant, guarded by `ATTRIBUTE_FILL_MODE`, only when supplied and different, never blanks an existing one.
+- **Channel pricing decoupled** *(Jul 2026)* — `SIMPRO_PRICE_TIER`, `SHOPIFY_PRICE_TIER`, `SHOPIFY_COMPARE_AT_TIER`, `SHOPIFY_DISCOUNT_PERCENT` in Config.yaml (supersedes the planned `SIMPRO_SYNC_TIER`). Defaults reproduce the old coupled behaviour.
 
 **Designed but NOT built** (do not assume these exist in code)
-- `SIMPRO_SYNC_TIER` — decouple the simPRO sync tier from Shopify (default Tier 4) so MJ Ryder's feed can move to Tier 5 (+~2.4%) without touching web prices.
 - Channel-aware `ALIGN_MODE` — full-catalogue re-sync of one channel (simPRO *or* Shopify) to its tier, with bulk-read + skip-if-unchanged + resumable checkpoint. *Currently shelved as disproportionate.*
 - `HARD_RESET_PRICES` switch.
 

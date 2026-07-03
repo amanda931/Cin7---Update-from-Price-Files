@@ -38,6 +38,23 @@ UPDATE_SHOPIFY: False
 ZAP_PAUSE_PROMPT: True
 ZAP_NAME: Cin7 sync Zap(s)
 
+# --- Channel pricing (price-file update and uplift modes) ---
+# Each channel prices from its own Cin7 tier, so simPRO and Shopify are
+# independent. Tiers are Tier1..Tier10 (Tier10 = the anchor, cost x multiplier).
+#
+# simPRO: price = SIMPRO_PRICE_TIER minus the product's discount rule (minimum
+# 40% — the per-product DiscountRule still applies when it is deeper than 40%).
+SIMPRO_PRICE_TIER: Tier4
+#
+# Shopify: price = SHOPIFY_PRICE_TIER minus SHOPIFY_DISCOUNT_PERCENT (a FLAT
+# percentage — the per-product DiscountRule does NOT apply to Shopify).
+# compare_at (the strike-through "was" price) = SHOPIFY_COMPARE_AT_TIER.
+# Example: sell at Tier9 with no discount, show Tier5 as the was-price:
+#   SHOPIFY_PRICE_TIER: Tier9   SHOPIFY_COMPARE_AT_TIER: Tier5   SHOPIFY_DISCOUNT_PERCENT: 0
+SHOPIFY_PRICE_TIER: Tier4
+SHOPIFY_COMPARE_AT_TIER: Tier4
+SHOPIFY_DISCOUNT_PERCENT: 40
+
 
 # ==============================================================================
 # SCOPE & CATALOGUE  -  used by Uplift and Audit (both scan the whole catalogue)
