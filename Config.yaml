@@ -22,15 +22,15 @@
 
 # Preview vs live.  True = show what would change, write nothing.  False = apply.
 # Always do a True (dry) run first.
-DRY_RUN: False
+DRY_RUN: True
 
 # API calls per minute.  Stay below 60 to leave headroom for Zapier workflows.
 RATE_LIMIT_PER_MIN: 55
 
 # Which systems to write to (price-file update and uplift modes).
 UPDATE_CIN7: True
-UPDATE_SIMPRO: True
-UPDATE_SHOPIFY: True
+UPDATE_SIMPRO: False
+UPDATE_SHOPIFY: False
 
 # Before any LIVE run, prompt to confirm the sync Zap(s) are turned OFF, so a bulk
 # run doesn't fire a single-update Zap for every changed product.
@@ -48,7 +48,7 @@ ZAP_NAME: Cin7 sync Zap(s)
 #   Uplift: refuses to run if BOTH are blank (safety net) - set at least one.
 #   Audit : blank means the WHOLE catalogue.
 # Examples:  BRAND_FILTER: EPH Controls      CATEGORY_FILTER: Central Heating Controls
-BRAND_FILTER:
+BRAND_FILTER: Avalon
 CATEGORY_FILTER:
 
 # Exclude "Bathroom Brands" so a run can't accidentally sweep ~72k products.
@@ -189,7 +189,7 @@ AUDIT_TOLERANCE_PENCE: 2
 # boilerplate from the NEW_PRODUCT_* values below; per-row Category / Brand /
 # Barcode / CostingMethod / Discount / Supplier columns override the defaults.
 # Category is REQUIRED for a create - supply a column or set the default below.
-CREATE_MISSING: True
+CREATE_MISSING: False
 
 # --- Boilerplate applied to every new product ---
 NEW_PRODUCT_TYPE: Stock
@@ -208,13 +208,13 @@ NEW_PRODUCT_DROPSHIP: No Drop Ship
 # --- Fallbacks, used only when a file row leaves these blank ---
 # (Serial-tracked items, e.g. boilers/filters: put "Serial" in a CostingMethod
 #  column on those rows - it maps to "FIFO - Serial Number".)
-NEW_PRODUCT_DEFAULT_CATEGORY: Wall Panels
-NEW_PRODUCT_DEFAULT_BRAND: Grant Westfield
+NEW_PRODUCT_DEFAULT_CATEGORY: 
+NEW_PRODUCT_DEFAULT_BRAND: 
 
 # Attach the file Cost to this supplier on new products. Blank = create with correct
 # selling prices but NO supplier-cost row (add via your PO process). Must be an
 # existing Cin7 supplier name; a "Supplier" column overrides this per row.
-NEW_PRODUCT_SUPPLIER: Grant Westfield Ltd
+NEW_PRODUCT_SUPPLIER: 
 
 # ==============================================================================
 # DEPRECATE DISCONTINUED PRODUCTS  -  DEPRECATE_MODE: True

@@ -3183,7 +3183,7 @@ def main():
         "Tier1", "Tier2", "Tier3", "Tier4", "Tier5",
         "Tier6", "Tier7", "Tier8", "Tier9", "Tier10",
         "SimproNewPrice", "AttributeChanges", "Cin7Updated", "SimproUpdated",
-        "ShopifyUpdated", "ShopifyPrice", "ShopifyCompareAtPrice",
+        "ShopifyUpdated", "ShopifyPrice", "ShopifyCompareAtPrice", "ShopifyBarcode",
         "DryRun", "Success", "Error"
     ]
     with open(LOG_FILE_PATH, "w", newline="", encoding="utf-8") as f:
