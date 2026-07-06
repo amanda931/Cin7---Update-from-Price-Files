@@ -95,15 +95,22 @@ CIN7_INTERNAL_NOTE_FIELD = "InternalNote"
 # file are used; blank cells are skipped. NOTE: in Cin7 Core the GTIN/EAN is
 # stored in the product's "Barcode" field — there is no separate GTIN field.
 ATTRIBUTE_COLUMN_MAP = {
-    "Barcode": "Barcode",
+    "Barcode":       "Barcode",
+    "Category":      "Category",
+    "Brand":         "Brand",
+    "Discount":      "DiscountRule",    # also drives THIS run's simPRO discount
+    "CostingMethod": "CostingMethod",   # normalised (e.g. "Serial" -> "FIFO - Serial Number");
+                                        # Cin7 may reject a change on a product holding stock
     # "GTIN":        "Barcode",      # alias — writes the same Cin7 field
-    # "Category":    "Category",
-    # "Brand":       "Brand",
     # "Description": "Description",
     # "UOM":         "UOM",
     # Numeric fields (Weight/Length/Width/Height) can be added later — they need
     # to be sent as numbers, so flag them and I'll wire the conversion.
 }
+# (MarkUpMultiplier is handled separately — it must feed the tier maths, not just
+# a write-back. All of these update EXISTING products when the column is present
+# and the cell is non-blank; blank cells always leave Cin7 untouched. The same
+# columns still seed newly-created products under CREATE_MISSING.)
 
 
 # ==============================================================================
@@ -233,6 +240,15 @@ AUDIT_MODE          = _parse_bool(_cfg.get("AUDIT_MODE", "False"))
 # Equivalent of adding 'priced' after --audit: skip the unpriced (old-markup)
 # backlog and report only genuinely mispriced products.
 AUDIT_SKIP_UNPRICED = _parse_bool(_cfg.get("AUDIT_SKIP_UNPRICED", "False"))
+
+# --- Export mode (read-only) ----------------------------------------------------
+# EXPORT_MODE: True (or the --export switch) writes the products matching
+# BRAND_FILTER / CATEGORY_FILTER to Export1.csv in Cin7 Inventory List format.
+# Column headers come from Cin7Template.csv in this folder when present (drop a
+# real Cin7 Inventory List export there so re-import headers match your build
+# exactly); otherwise the built-in Cin7 Core header set is used. Never writes to
+# Cin7/simPRO/Shopify.
+EXPORT_MODE = _parse_bool(_cfg.get("EXPORT_MODE", "False"))
 
 # Whether each live update first clears the product's Cin7 markup rule before
 # writing fixed tiers. True = clear it per product (the original behaviour, needed
@@ -1832,14 +1848,20 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
         if floored:
             markup_multiplier = Decimal("2")
         multiplier_str = format_decimal_clean(markup_multiplier)
+        # Report the multiplier alongside the other attribute changes (on the
+        # "Attributes set:" line after the [OK]/dry-run summary), and only when
+        # the written value genuinely differs from the existing AA2 — so
+        # "2.1 -> 2.1" noise is never printed. The value reported is the one
+        # actually written (post-floor), never a below-floor file cell.
+        mult_change = None
         if file_mult_applied:
-            # Report the value actually written (post-floor), not just the file cell,
-            # so the console never implies a below-floor value went in.
-            msg = (f"  SKU {sku}: MarkUpMultiplier "
-                   f"{clean(existing_aa2) or '(blank)'} -> {multiplier_str}")
-            if floored:
-                msg += f" (file value {format_decimal_clean(parsed_mult)} is below the floor; set to 2)"
-            print(msg)
+            existing_norm = (format_decimal_clean(to_decimal_safe(existing_aa2, "0"))
+                             if clean(existing_aa2).strip() else "")
+            if existing_norm != multiplier_str:
+                mult_change = f"{existing_norm or '(blank)'} -> {multiplier_str}"
+                if floored:
+                    mult_change += (f" (file value {format_decimal_clean(parsed_mult)} "
+                                    f"is below the floor; set to 2)")
 
         if uplift:
             # --- Manufacturer uplift mode (no price file) ---
@@ -1925,8 +1947,16 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
 
         supplier_fixed_price = to_float(money(cost * Decimal("2")))
 
-        # simPRO price = configured tier minus discount rule (minimum 40%)
-        discount_rule    = parse_percent(product.get("DiscountRule"), 0)
+        # simPRO price = configured tier minus discount rule (minimum 40%).
+        # A file-supplied Discount (mapped to DiscountRule) takes effect in THIS
+        # run's calculation too — matching what the attribute overlay below will
+        # write — honouring fill_blank mode.
+        file_disc     = clean((file_attrs or {}).get("DiscountRule", "")).strip()
+        existing_disc = clean(product.get("DiscountRule", "")).strip()
+        if file_disc and not (ATTRIBUTE_FILL_MODE == "fill_blank" and existing_disc):
+            discount_rule = parse_percent(file_disc, 0)
+        else:
+            discount_rule = parse_percent(existing_disc, 0)
         discount_used    = max(Decimal("40"), discount_rule)
         simpro_price     = money(Decimal(str(tiers[SIMPRO_PRICE_TIER])) * (Decimal("1") - discount_used / Decimal("100")))
         simpro_price_f   = to_float(simpro_price)
@@ -2015,6 +2045,10 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
                 supplied_val = clean(supplied_val).strip()
                 if not supplied_val:
                     continue                      # blank cell — leave Cin7 as-is
+                if cin7_field == "CostingMethod":
+                    # Same normalisation as the create path ("Serial" ->
+                    # "FIFO - Serial Number" etc.) so file shorthand works here too.
+                    supplied_val = resolve_costing_method(supplied_val)
                 existing_val = clean(product.get(cin7_field, "")).strip()
                 if ATTRIBUTE_FILL_MODE == "fill_blank" and existing_val:
                     continue                      # don't overwrite an existing value
@@ -2022,6 +2056,8 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
                     continue                      # already correct — no change
                 cin7_payload[cin7_field] = supplied_val
                 attr_changes[cin7_field] = f"{existing_val or '(blank)'} -> {supplied_val}"
+        if mult_change:
+            attr_changes["MarkUpMultiplier"] = mult_change
         result["AttributeChanges"] = " | ".join(f"{k}: {v}" for k, v in attr_changes.items())
 
         # --- Dry run: print preview and stop ---
@@ -2374,6 +2410,295 @@ def check_business_hours():
 
 
 # ==============================================================================
+# SECTION 11a2 — Export mode (read-only)
+# Writes the products matching BRAND_FILTER / CATEGORY_FILTER to Export1.csv in
+# Cin7 Inventory List format. Headers come from Cin7Template.csv when present
+# (drop a real Cin7 export there so re-import headers match your build exactly);
+# otherwise the built-in Cin7 Core header set below is used. Never writes to
+# Cin7/simPRO/Shopify and fires no Zapier workflows.
+# ==============================================================================
+
+EXPORT_FILE_PATH     = os.path.join(SCRIPT_DIR, "Export1.csv")
+EXPORT_CACHE_PATH    = os.path.join(SCRIPT_DIR, "export_cache.json")
+
+# The header template (a real Cin7 Inventory List export) may live in Helpers/
+# or in the script folder itself — first match wins.
+EXPORT_TEMPLATE_PATHS = [os.path.join(SCRIPT_DIR, "Helpers", "Cin7Template.csv"),
+                         os.path.join(SCRIPT_DIR, "Cin7Template.csv")]
+
+# Built-in fallback headers — Cin7 Core's Inventory List layout. If Cin7 rejects a
+# re-import because its template has changed, export an Inventory List from Cin7
+# (Inventory -> Products -> Export -> Inventory List) and save it in this folder
+# as Cin7Template.csv: the script will then copy that header row exactly.
+DEFAULT_EXPORT_HEADERS = (
+    ["ProductCode", "Name", "Category", "Brand", "Type", "CostingMethod",
+     "DefaultLocation", "Length", "Width", "Height", "Weight", "UOM",
+     "WeightUnits", "DimensionsUnits", "Barcode", "MinimumBeforeReorder",
+     "ReorderQuantity"]
+    + [f"PriceTier{i}" for i in range(1, 11)]
+    + ["PurchaseTaxRule", "SaleTaxRule", "DefaultSupplier", "DefaultUnitCost",
+       "Discount", "Description", "ShortDescription", "InternalNote"]
+    + [f"AdditionalAttribute{i}" for i in range(1, 11)]
+    + ["AttributeSet", "StockLocator", "Status", "Sellable",
+       "COGSAccount", "RevenueAccount", "InventoryAccount", "ExpenseAccount"]
+)
+
+
+def cin7_fetch_export_products(brand="", category="", exclude_bathroom_brands=False,
+                               page_limit=1000):
+    """
+    Page the whole catalogue WITH suppliers, keeping the RAW product dicts whose
+    Brand/Category match the scope (case-insensitive exact match — the same
+    semantics as filter_catalogue, including the bathroom-brands exclusion).
+    Non-matching rows are dropped during paging so memory stays small. Read-only.
+    """
+    want_brand = brand.strip().lower()
+    want_cat   = category.strip().lower()
+    out, page, total = [], 1, None
+    while True:
+        rate_limiter.wait()
+        r = requests.get(CIN7_PRODUCT_URL, headers=cin7_headers,
+                         params={"Page": page, "Limit": page_limit,
+                                 "IncludeSuppliers": "true"}, timeout=60)
+        if not (200 <= r.status_code < 300):
+            raise ValueError(f"Cin7 product list (export) failed (page {page}): "
+                             f"{r.status_code} - {r.text[:300]}")
+        body = r.json()
+        if isinstance(body, dict):
+            products = body.get("Products", []) or []
+            total    = body.get("Total", total)
+        elif isinstance(body, list):
+            products = body
+        else:
+            products = []
+        if not products:
+            break
+        for p in products:
+            if not isinstance(p, dict) or not clean(p.get("SKU", "")).strip():
+                continue
+            p_brand = clean(p.get("Brand", "")).strip().lower()
+            p_cat   = clean(p.get("Category", "")).strip().lower()
+            if exclude_bathroom_brands and ("bathroom brands" in (p_brand, p_cat)):
+                continue
+            if want_brand and p_brand != want_brand:
+                continue
+            if want_cat and p_cat != want_cat:
+                continue
+            out.append(p)
+        print(f"  [export] scanned page {page}, matched {len(out)}...", end="\r")
+        if total is not None and page * page_limit >= int(total):
+            break
+        if len(products) < page_limit:
+            break
+        page += 1
+    print(f"  [export] matched {len(out)} product(s)." + " " * 20)
+    return out
+
+
+def _export_norm(s):
+    """Normalise a column header / field name for matching: lower-case, strip
+    spaces and underscores, so 'Product Code', 'ProductCode' and 'product_code'
+    all meet."""
+    return re.sub(r"[\s_]+", "", str(s)).strip().lower()
+
+
+# CSV template headers whose names differ from the Cin7 API product field
+# (normalised header -> API field). Everything else resolves by name match.
+_EXPORT_HEADER_ALIASES = {
+    "productcode":          "SKU",
+    "defaultunitofmeasure": "UOM",
+    "productattributeset":  "AttributeSet",
+    "discountname":         "DiscountRule",
+    "discount":             "DiscountRule",
+    "dimensionunits":       "DimensionsUnits",
+    "dropship":             "DropShipMode",
+    "commadelimitedtags":   "Tags",
+}
+
+# CSV template headers that come from the product's FIRST supplier row
+# (normalised header -> key in the supplier dict).
+_EXPORT_SUPPLIER_FIELDS = {
+    "lastsuppliedby":      "SupplierName",
+    "defaultsupplier":     "SupplierName",
+    "supplierproductcode": "SupplierInventoryCode",
+    "supplierproductname": "SupplierProductName",
+    "supplierfixedprice":  "FixedCost",
+    "defaultunitcost":     "Cost",
+}
+
+
+def _export_cell(product, header, keymap):
+    """Resolve one CSV cell for `header` from a raw Cin7 product dict.
+    keymap maps normalised product-field names -> real dict keys. Unknown
+    headers return '' so a template with extra columns still writes cleanly."""
+    h = _export_norm(header)
+    if h in _EXPORT_SUPPLIER_FIELDS:
+        sups  = product.get("Suppliers") or []
+        first = sups[0] if sups and isinstance(sups[0], dict) else {}
+        v = first.get(_EXPORT_SUPPLIER_FIELDS[h])
+    else:
+        field = _EXPORT_HEADER_ALIASES.get(h)
+        key   = keymap.get(_export_norm(field)) if field else keymap.get(h)
+        if key is None and field and field in product:
+            key = field
+        if key is None:
+            return ""
+        v = product.get(key)
+    if v is None or v == "":
+        return ""
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, str):
+        return clean(v).strip()
+    return v
+
+
+def _load_export_cache(max_age_hours):
+    """Return (products, generated_str) from the WHOLE-catalogue export cache when
+    it is fresher than max_age_hours; otherwise (None, None). Same rules as the
+    catalogue index cache: age-based, and REFRESH_CATALOGUE forces a rescan.
+    One scan a day serves every brand/category export, because Cin7 ignores
+    Brand/Category filters server-side and the scan pages everything anyway."""
+    if not os.path.exists(EXPORT_CACHE_PATH):
+        return None, None
+    try:
+        with open(EXPORT_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        generated = data.get("generated", "")
+        built     = datetime.strptime(generated, "%Y-%m-%d %H:%M")
+        age_hours = (datetime.now() - built).total_seconds() / 3600.0
+        if age_hours <= max_age_hours:
+            return data.get("products", []) or None, generated
+        print(f"  [export] cache is {age_hours:.0f}h old "
+              f"(limit {max_age_hours}h) — rescanning.")
+    except Exception as e:
+        print(f"  [export] cache unreadable ({e}) — rescanning.")
+    return None, None
+
+
+def _store_export_cache(products):
+    """Cache the whole-catalogue scan (raw product dicts with suppliers).
+    NOTE: this file is much larger than catalogue_index.json (full product
+    records) — it is gitignored and rebuilds itself, so it needs no management."""
+    try:
+        with open(EXPORT_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                       "count": len(products), "products": products}, f)
+        print(f"  [export] scan cached to {os.path.basename(EXPORT_CACHE_PATH)}.")
+    except Exception as e:
+        print(f"  [export] WARNING: could not write export cache ({e}).")
+
+
+def _export_scope_filter(products, brand="", category="", exclude_bathroom_brands=False):
+    """Filter raw product dicts by Brand/Category — same semantics as
+    filter_catalogue (case-insensitive exact match, bathroom-brands exclusion)."""
+    want_brand = brand.strip().lower()
+    want_cat   = category.strip().lower()
+    out = []
+    for p in products:
+        p_brand = clean(p.get("Brand", "")).strip().lower()
+        p_cat   = clean(p.get("Category", "")).strip().lower()
+        if exclude_bathroom_brands and ("bathroom brands" in (p_brand, p_cat)):
+            continue
+        if want_brand and p_brand != want_brand:
+            continue
+        if want_cat and p_cat != want_cat:
+            continue
+        out.append(p)
+    return out
+
+
+def _parse_export_arg():
+    """True if the first CLI argument is --export (read-only catalogue export)."""
+    args = sys.argv[1:]
+    return bool(args) and args[0].lower() == "--export"
+
+
+def run_export_mode():
+    """Read-only: export the in-scope products to Export1.csv in Cin7 format."""
+    print("=" * 60)
+    print("RHS Group Ltd — Export Catalogue to Export1.csv (read-only)")
+    print(f"Output: {EXPORT_FILE_PATH}")
+    print("=" * 60)
+
+    if not BRAND_FILTER and not CATEGORY_FILTER:
+        print("\nERROR: EXPORT_MODE is on but both BRAND_FILTER and CATEGORY_FILTER")
+        print("are blank. Refusing to export the entire catalogue (~7 min, ~72k rows).")
+        print("Set a brand and/or category in Config.yaml.")
+        return
+
+    scope_bits = []
+    if BRAND_FILTER:
+        scope_bits.append(f"Brand='{BRAND_FILTER}'")
+    if CATEGORY_FILTER:
+        scope_bits.append(f"Category='{CATEGORY_FILTER}'")
+    print(f"\n  Scope: {' + '.join(scope_bits)}")
+
+    # Headers: prefer a real Cin7 export's header row so re-import always matches.
+    headers = None
+    template_path = next((p for p in EXPORT_TEMPLATE_PATHS if os.path.exists(p)), None)
+    if template_path:
+        try:
+            with open(template_path, newline="", encoding="utf-8-sig") as f:
+                first = next(csv.reader(f), None)
+            if first:
+                headers = [h.strip() for h in first if str(h).strip()]
+                print(f"  Headers: {len(headers)} column(s) from "
+                      f"{os.path.relpath(template_path, SCRIPT_DIR)}")
+        except Exception as e:
+            print(f"  WARNING: could not read Cin7Template.csv ({e}) — using built-in headers.")
+    if not headers:
+        headers = list(DEFAULT_EXPORT_HEADERS)
+        print(f"  Headers: built-in Cin7 Core set ({len(headers)} columns). Tip: drop a real")
+        print("           Cin7 Inventory List export here as Cin7Template.csv to guarantee")
+        print("           re-import headers match your Cin7 build exactly.")
+
+    # Cache: the WHOLE catalogue is scanned and cached once (rebuild only if older
+    # than 24h, whatever CATALOGUE_MAX_AGE_HOURS is set to; REFRESH_CATALOGUE
+    # forces a rescan), then filtered locally — so switching Brand/Category costs
+    # nothing until the cache ages out.
+    max_age  = min(CATALOGUE_MAX_AGE_HOURS, 24)
+    full_cat = None
+    if not REFRESH_CATALOGUE:
+        full_cat, generated = _load_export_cache(max_age)
+        if full_cat:
+            print(f"  [export] using cached catalogue "
+                  f"({len(full_cat)} products, built {generated}).")
+    if full_cat is None:
+        print("\nScanning WHOLE catalogue with suppliers (~2-7 min, read-only)...")
+        try:
+            full_cat = cin7_fetch_export_products()   # no filters: cache everything
+        except Exception as e:
+            print(f"\nERROR fetching products from Cin7: {e}")
+            return
+        if full_cat:
+            _store_export_cache(full_cat)
+    products = _export_scope_filter(
+        full_cat or [], brand=BRAND_FILTER, category=CATEGORY_FILTER,
+        exclude_bathroom_brands=EXCLUDE_BATHROOM_BRANDS)
+    if not products:
+        print(f"\nNo products matched {' + '.join(scope_bits)}. Nothing exported.")
+        print("  (Check the brand/category spelling — matching is exact, case-insensitive.)")
+        return
+
+    # Map normalised field names -> real keys once, from the first product.
+    keymap = {_export_norm(k): k for k in products[0].keys()}
+
+    try:
+        with open(EXPORT_FILE_PATH, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(headers)
+            for p in products:
+                w.writerow([_export_cell(p, h, keymap) for h in headers])
+    except PermissionError:
+        print(f"\nERROR: cannot write {os.path.basename(EXPORT_FILE_PATH)} — is it open in Excel?")
+        return
+
+    print(f"\nDone. {len(products)} product(s) written to {os.path.basename(EXPORT_FILE_PATH)}.")
+    print("Read-only run — nothing was changed in Cin7, simPRO or Shopify.")
+
+
+# ==============================================================================
 # SECTION 11b — Phase 3: Deprecate discontinued products (and reactivate/undo)
 # Reads the price file as the COMPLETE list for one brand, deprecates in-brand
 # products that aren't in the file AND hold no stock. Brand-scoped or it refuses.
@@ -2492,13 +2817,15 @@ def run_deprecate_mode():
     print(f"\n  Keep-list: {len(keep)} SKU(s) read from {os.path.basename(PRICE_FILE_PATH)}")
     print(f"  Scope:     {scope_str}")
 
-    # --- In-brand product set. Use a recent index (rebuild only if older than 2h);
-    # the live GET on each target re-checks its status at write time, so this stays
-    # safe while avoiding a full ~3-min rebuild on every back-to-back run. ---
+    # --- In-brand product set. Use a recent index (rebuild only if older than 24h,
+    # whatever CATALOGUE_MAX_AGE_HOURS is set to); staleness here is safe: the live
+    # GET on each target re-checks its status at write time, and a product added to
+    # Cin7 since the cache was built is simply not matched (nothing gets deprecated
+    # that shouldn't be — at worst a brand-new product waits for the next rebuild). ---
     print("\nFinding products in scope...")
     try:
         index, cat_generated = load_catalogue_index(
-            refresh=REFRESH_CATALOGUE, max_age_hours=min(CATALOGUE_MAX_AGE_HOURS, 2))
+            refresh=REFRESH_CATALOGUE, max_age_hours=min(CATALOGUE_MAX_AGE_HOURS, 24))
     except Exception as e:
         print(f"\nERROR building Cin7 catalogue index: {e}")
         return
@@ -2819,6 +3146,11 @@ def main():
     # --- Audit (read-only tier check)? Via the --audit switch or AUDIT_MODE in Config. ---
     if _parse_audit_arg() or AUDIT_MODE:
         run_audit_mode()
+        return
+
+    # --- Export (read-only catalogue export)? Via --export or EXPORT_MODE in Config. ---
+    if _parse_export_arg() or EXPORT_MODE:
+        run_export_mode()
         return
 
     # --- Reactivate (undo) mode? Highest-priority command-line switch. ---

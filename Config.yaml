@@ -12,6 +12,7 @@
 #   Tier audit                  - run with  --audit   (read-only health check)
 #   Create missing products     - CREATE_MISSING: True (during a file run)
 #   Deprecate discontinued      - DEPRECATE_MODE: True
+#   Export catalogue to CSV     - run with  --export,  OR EXPORT_MODE: True (read-only)
 #   Reactivate / retry          - run with  --reactivate  /  --retry
 # ==============================================================================
 
@@ -22,7 +23,7 @@
 
 # Preview vs live.  True = show what would change, write nothing.  False = apply.
 # Always do a True (dry) run first.
-DRY_RUN: True
+DRY_RUN: False
 
 # API calls per minute.  Stay below 60 to leave headroom for Zapier workflows.
 RATE_LIMIT_PER_MIN: 55
@@ -65,7 +66,7 @@ SHOPIFY_DISCOUNT_PERCENT: 40
 #   Uplift: refuses to run if BOTH are blank (safety net) - set at least one.
 #   Audit : blank means the WHOLE catalogue.
 # Examples:  BRAND_FILTER: EPH Controls      CATEGORY_FILTER: Central Heating Controls
-BRAND_FILTER: Avalon
+BRAND_FILTER: Aqualla
 CATEGORY_FILTER:
 
 # Exclude "Bathroom Brands" so a run can't accidentally sweep ~72k products.
@@ -80,10 +81,11 @@ EXCLUDE_BATHROOM_BRANDS: False
 # CATALOGUE_MAX_AGE_HOURS, so there's nothing to manage by hand day to day.
 CATALOGUE_MAX_AGE_HOURS: 24
 
-# Force a rebuild on the next run regardless of age (e.g. right after adding new
-# products you want included straight away). It only forces the NEXT run - no need
-# to switch it back.
-REFRESH_CATALOGUE: True
+# Force a rebuild on EVERY run regardless of age (e.g. right after adding new
+# products you want included straight away). NOTE: the script never resets this -
+# it forces a rebuild on every run until you set it back to False, so switch it
+# off once you've had the fresh scan you wanted.
+REFRESH_CATALOGUE: False
 
 
 # ==============================================================================
@@ -97,9 +99,11 @@ REFRESH_CATALOGUE: True
 # PRICE_FILE_PATH near the top of the .py script. (That path is set in the script,
 # not here in Config.)
 
-# How file attributes (e.g. Barcode/GTIN) are applied when Cin7 already has a value:
+# How file attributes (Barcode, Category, Brand, Discount, CostingMethod) are
+# applied when Cin7 already has a value:
 #   overwrite   = the file always wins (file is the source of truth)
 #   fill_blank  = only set the attribute when Cin7's existing value is empty
+# Blank cells never change anything, in either mode.
 ATTRIBUTE_FILL_MODE: overwrite
 
 # Clear each product's Cin7 markup rule before writing its fixed tiers?
@@ -126,7 +130,7 @@ REMOVE_MARKUP_PRICES: False
 #   False = apply cost reductions without holding
 # After reviewing the held lines, push the genuine ones through with:
 #     python cin7_price_updater.py --retry last --allow-decreases
-BLOCK_COST_DECREASES: True
+BLOCK_COST_DECREASES: False
 
 # Rounding slack, in pounds. A drop within this much is treated as rounding and let
 # through; only a larger reduction is held. Raise it if your cost maths rounds loosely.
@@ -198,6 +202,22 @@ AUDIT_TOLERANCE_PENCE: 2
 
 
 # ==============================================================================
+# EXPORT CATALOGUE  -  run with  --export,  OR set EXPORT_MODE: True below
+# ==============================================================================
+# Read-only. Writes every product matching BRAND_FILTER / CATEGORY_FILTER (in
+# SCOPE above - at least one must be set) to Export1.csv in this folder, in Cin7
+# Inventory List format. The WHOLE catalogue is scanned with suppliers
+# (~2-7 min), cached to export_cache.json and reused for 24h - same rule as the
+# catalogue index - then filtered locally, so switching Brand/Category between
+# exports costs nothing. REFRESH_CATALOGUE: True forces a rescan.
+# Headers: if a file called Cin7Template.csv exists in Helpers\ or in this
+# folder (a real Cin7 Inventory List export - Inventory > Products > Export),
+# its header row is copied exactly so the file re-imports cleanly; otherwise a
+# built-in Cin7 Core header set is used. Set back to False after the export.
+EXPORT_MODE: False
+EXPORT_USE_TEMPLATE: True
+
+# ==============================================================================
 # CREATE MISSING PRODUCTS  -  CREATE_MISSING: True  (file mode only)
 # ==============================================================================
 # Any SKU in the price file NOT found in Cin7 is CREATED instead of erroring.
@@ -206,7 +226,7 @@ AUDIT_TOLERANCE_PENCE: 2
 # boilerplate from the NEW_PRODUCT_* values below; per-row Category / Brand /
 # Barcode / CostingMethod / Discount / Supplier columns override the defaults.
 # Category is REQUIRED for a create - supply a column or set the default below.
-CREATE_MISSING: False
+CREATE_MISSING: True
 
 # --- Boilerplate applied to every new product ---
 NEW_PRODUCT_TYPE: Stock
@@ -219,19 +239,19 @@ NEW_PRODUCT_REVENUE_ACCOUNT: 240
 NEW_PRODUCT_PURCHASE_TAX_RULE: 20% (VAT on Expenses)
 NEW_PRODUCT_SALE_TAX_RULE: 20% (VAT on Income)
 NEW_PRODUCT_ATTRIBUTE_SET: Product Details
-NEW_PRODUCT_MULTIPLIER: 2
+NEW_PRODUCT_MULTIPLIER: 2.1
 NEW_PRODUCT_DROPSHIP: No Drop Ship
 
 # --- Fallbacks, used only when a file row leaves these blank ---
 # (Serial-tracked items, e.g. boilers/filters: put "Serial" in a CostingMethod
 #  column on those rows - it maps to "FIFO - Serial Number".)
-NEW_PRODUCT_DEFAULT_CATEGORY: 
-NEW_PRODUCT_DEFAULT_BRAND: 
+NEW_PRODUCT_DEFAULT_CATEGORY: Bathroom Brands
+NEW_PRODUCT_DEFAULT_BRAND: Bathrooms to Love
 
 # Attach the file Cost to this supplier on new products. Blank = create with correct
 # selling prices but NO supplier-cost row (add via your PO process). Must be an
 # existing Cin7 supplier name; a "Supplier" column overrides this per row.
-NEW_PRODUCT_SUPPLIER: 
+NEW_PRODUCT_SUPPLIER: PJH Group
 
 # ==============================================================================
 # DEPRECATE DISCONTINUED PRODUCTS  -  DEPRECATE_MODE: True

@@ -37,7 +37,8 @@ The file can carry a few **optional columns** that are picked up automatically w
   - `overwrite` (default) — the file always wins.
   - `fill_blank` — only set the barcode when Cin7's existing value is empty.
 - **MarkUpMultiplier** — overrides the product's existing `AdditionalAttribute2` for this run's tier maths. A valid positive number on the row drives the ladder (floored at 2); a non-numeric value is ignored with a warning and the existing multiplier is used.
-- **Category, Brand, CostingMethod, Discount, Supplier** — only used when a SKU has to be **created** (see below). Blank cells are ignored; nothing is overwritten with a blank.
+- **Category, Brand, Discount, CostingMethod** — update EXISTING products when the cell is non-blank (obeying `ATTRIBUTE_FILL_MODE`), and seed newly-created products under CREATE_MISSING. A file Discount also drives that run's simPRO price. CostingMethod is normalised ("Serial" → "FIFO - Serial Number") and Cin7 may reject a change on a product holding stock. Blank cells are ignored; nothing is overwritten with a blank.
+- **Supplier** — create-only (attaches the file Cost to that supplier on new products).
 
 ### Cost-decrease guard (`BLOCK_COST_DECREASES`)
 A backstop against a mis-keyed or mis-sorted file quietly **lowering** live prices. With `BLOCK_COST_DECREASES: True` (recommended), any SKU whose **new** file cost is below the **old** cost already in Cin7 is **held** — nothing is written for it (no cost, no tiers, no simPRO/Shopify) and it's logged with Action `skipped_cost_decrease` for review. `COST_DECREASE_TOLERANCE` (pounds) lets small rounding drops through; only a larger reduction is held. Increases and unchanged lines apply as normal. It only guards products that already have a supplier cost in Cin7 — new products and uplift mode are unaffected. After reviewing the held lines, push the genuine ones through with:

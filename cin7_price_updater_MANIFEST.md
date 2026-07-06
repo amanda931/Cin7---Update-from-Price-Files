@@ -66,7 +66,7 @@ SKU, Name, Cost, Category, Brand, Barcode, CostingMethod
 
 - `SKU`, `Cost` drive the repricing; `Name` updates the product name.
 - `Barcode` writes the Cin7 Barcode field (there is no separate GTIN field) and now also syncs to the Shopify variant.
-- `Category`, `Brand`, `CostingMethod`, `Discount`, `Supplier` can be supplied per row.
+- `Category`, `Brand`, `Discount`, `CostingMethod` per row update existing products (via `ATTRIBUTE_COLUMN_MAP`, obeying `ATTRIBUTE_FILL_MODE`) and seed creates; `Supplier` is create-only. A file `Discount` also drives that run's simPRO discount.
 - A per-row `MarkUpMultiplier` is honoured, falling back to `AdditionalAttribute2` (typically ×2.0; floor 2).
 - Attribute writes obey `ATTRIBUTE_FILL_MODE` — `fill_blank` won't overwrite a value Cin7 already holds; `overwrite` will. Blank cells are always left as-is.
 
@@ -120,6 +120,7 @@ simPRO base `https://mjryder.simprosuite.com`; supplier name `RHS Group Ltd`.
 - **Per-row `MarkUpMultiplier`** — a `MarkUpMultiplier` column overrides the product's existing `AdditionalAttribute2` for the tier maths (floor 2).
 - **Barcode now syncs to Shopify** — file `Barcode` → variant, guarded by `ATTRIBUTE_FILL_MODE`, only when supplied and different, never blanks an existing one.
 - **Channel pricing decoupled** *(Jul 2026)* — `SIMPRO_PRICE_TIER`, `SHOPIFY_PRICE_TIER`, `SHOPIFY_COMPARE_AT_TIER`, `SHOPIFY_DISCOUNT_PERCENT` in Config.yaml (supersedes the planned `SIMPRO_SYNC_TIER`). Defaults reproduce the old coupled behaviour.
+- **Export mode** *(Jul 2026)* — `--export` / `EXPORT_MODE: True` writes Brand/Category-scoped products to `Export1.csv` in Cin7 Inventory List format (read-only). The whole catalogue is scanned with suppliers once, cached to `export_cache.json` (24h rule, `REFRESH_CATALOGUE` forces), and filtered locally — switching brands between exports costs no API calls. Headers copied from `Cin7Template.csv` when present, else a built-in Cin7 Core set.
 
 **Designed but NOT built** (do not assume these exist in code)
 - Channel-aware `ALIGN_MODE` — full-catalogue re-sync of one channel (simPRO *or* Shopify) to its tier, with bulk-read + skip-if-unchanged + resumable checkpoint. *Currently shelved as disproportionate.*

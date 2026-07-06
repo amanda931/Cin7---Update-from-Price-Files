@@ -9,5 +9,8 @@ __pycache__/
 # Input data — supplier price file changes constantly
 *.csv
 
+# Export-mode scan cache (rebuilds itself; can get large)
+export_cache.json
+
 # Safety net — never commit credentials, even a stray local copy
 Credentials.txt
