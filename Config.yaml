@@ -130,11 +130,23 @@ REMOVE_MARKUP_PRICES: False
 #   False = apply cost reductions without holding
 # After reviewing the held lines, push the genuine ones through with:
 #     python cin7_price_updater.py --retry last --allow-decreases
-BLOCK_COST_DECREASES: False
+BLOCK_COST_DECREASES: True
 
 # Rounding slack, in pounds. A drop within this much is treated as rounding and let
 # through; only a larger reduction is held. Raise it if your cost maths rounds loosely.
 COST_DECREASE_TOLERANCE: 0.02
+
+# --- Hard price reset (file mode only) ---
+# Normally Tier10 is RATCHETED: max(file cost, existing Tier10, cost x multiplier/2)
+# - selling prices can rise but never fall, whatever the file says.
+# HARD_RESET_PRICES: True re-anchors Tier10 strictly from file cost x multiplier
+# (floored at cost, so nothing is ever priced below what you pay). This is the
+# ONLY way selling tiers can DECREASE - use it to push a genuine reprice-down or
+# to correct inflated tiers. Live runs demand a typed CONFIRM on top of the
+# usual gates. Cost decreases are still held by BLOCK_COST_DECREASES above -
+# for a file that also cuts costs, run with --allow-decreases.
+# Set back to False after the reset run.
+HARD_RESET_PRICES: False
 
 
 # ==============================================================================
@@ -252,6 +264,41 @@ NEW_PRODUCT_DEFAULT_BRAND: Bathrooms to Love
 # selling prices but NO supplier-cost row (add via your PO process). Must be an
 # existing Cin7 supplier name; a "Supplier" column overrides this per row.
 NEW_PRODUCT_SUPPLIER: PJH Group
+
+# ==============================================================================
+# DESCRIPTION ENRICHER  -  run:  python cin7_description_enricher.py
+# ==============================================================================
+# Standalone batch port of the Zapier OpenAI description-enrichment step (same
+# prompt, schema and safety gates). Targets products matching BRAND_FILTER /
+# CATEGORY_FILTER (in SCOPE above) where AdditionalAttribute8 is not "true"
+# and the description is blank. Honours DRY_RUN above. NEVER run at the same
+# time as a live price run or the enrichment Zap (both write AdditionalAttrs).
+# Requires OPENAI_API_KEY in C:\Python\Credentials.txt.
+
+# Maximum products enriched per run (each one is a billable OpenAI call).
+ENRICH_MAX_PRODUCTS: 5
+
+# OpenAI model (matches the Zap).
+ENRICH_MODEL: gpt-5.4-mini
+
+# Cin7 field the description is written to.
+ENRICH_DESCRIPTION_FIELD: Description
+
+# True = only write when the description field is blank (recommended).
+ENRICH_ONLY_IF_BLANK: True
+
+# Search terms (AdditionalAttribute3-6): blank_only or overwrite.
+ENRICH_SEARCH_TERMS_MODE: blank_only
+
+# Minimum OpenAI confidence for the exact-product lane.
+ENRICH_MIN_CONFIDENCE: 0.85
+
+# Barcode: only write when Cin7's is blank; minimum research confidence.
+ENRICH_BARCODE_ONLY_IF_BLANK: True
+ENRICH_MIN_BARCODE_CONFIDENCE: 0.90
+
+# Cin7 field used as the manufacturer/brand source.
+ENRICH_MANUFACTURER_FIELD: Brand
 
 # ==============================================================================
 # DEPRECATE DISCONTINUED PRODUCTS  -  DEPRECATE_MODE: True

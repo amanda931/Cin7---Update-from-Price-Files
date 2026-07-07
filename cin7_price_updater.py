@@ -192,6 +192,14 @@ if not (Decimal("0") <= SHOPIFY_DISCOUNT_PERCENT <= Decimal("99")):
 # those through with:   python cin7_price_updater.py --retry last --allow-decreases
 # COST_DECREASE_TOLERANCE is a small £ slack so penny rounding never trips the guard.
 BLOCK_COST_DECREASES    = _parse_bool(_cfg.get("BLOCK_COST_DECREASES", "True"))
+
+# HARD RESET (file mode only): ignore the existing Tier10 ratchet and re-anchor
+# every processed product's Tier10 strictly from file cost x multiplier (floored
+# at cost, so a product can never be priced below what you pay for it). This is
+# the ONLY path that lets selling tiers DECREASE. Live runs require a typed
+# CONFIRM. Cost decreases are still guarded separately by BLOCK_COST_DECREASES /
+# --allow-decreases. Default False; an older Config keeps the ratchet.
+HARD_RESET_PRICES       = _parse_bool(_cfg.get("HARD_RESET_PRICES", "False"))
 COST_DECREASE_TOLERANCE = _parse_decimal(_cfg.get("COST_DECREASE_TOLERANCE", "0.02"), "0.02")
 # Set True by the --allow-decreases command-line flag (see _parse_allow_decreases).
 ALLOW_COST_DECREASES    = False
@@ -1887,23 +1895,37 @@ def process_sku(sku, file_name, new_supplier_cost, access_token, vendor_info=Non
             tier10_action = "uplifted_by_percentage"
             cost_rule     = uplift["label"]
         else:
-            # --- File mode: cost-driven from the CSV (unchanged behaviour) ---
+            # --- File mode: cost-driven from the CSV ---
             supplier_cost = money(new_supplier_cost)
-
-            # Tier10 = max of: supplier cost, existing Tier10, proposed (cost x multiplier / 2)
-            existing_tier10 = money(to_decimal_safe(product.get("PriceTier10"), str(supplier_cost)))
-            if existing_tier10 < supplier_cost:
-                existing_tier10 = supplier_cost
             proposed_tier10 = money(supplier_cost * markup_multiplier / Decimal("2"))
-            final_tier10    = max(supplier_cost, existing_tier10, proposed_tier10)
+            existing_tier10 = money(to_decimal_safe(product.get("PriceTier10"), str(supplier_cost)))
 
-            if final_tier10 > existing_tier10:
-                tier10_action = "increased_from_proposed_multiplier"
-            elif existing_tier10 == supplier_cost and proposed_tier10 <= existing_tier10:
-                tier10_action = "unchanged_at_supplier_cost_floor"
+            if HARD_RESET_PRICES:
+                # HARD RESET: ignore the existing Tier10 (the ratchet) and re-anchor
+                # strictly from file cost x multiplier, floored at cost. This is the
+                # only path where tiers can move DOWN.
+                final_tier10 = max(supplier_cost, proposed_tier10)
+                if final_tier10 < existing_tier10:
+                    tier10_action = "hard_reset_decreased"
+                elif final_tier10 > existing_tier10:
+                    tier10_action = "hard_reset_increased"
+                else:
+                    tier10_action = "hard_reset_unchanged"
+                cost_rule = "Bulk price file update (HARD RESET)"
             else:
-                tier10_action = "unchanged_existing_tier10_higher_or_equal"
-            cost_rule = "Bulk price file update"
+                # Ratchet (default): Tier10 = max of supplier cost, existing Tier10,
+                # proposed (cost x multiplier / 2) — never decreases.
+                if existing_tier10 < supplier_cost:
+                    existing_tier10 = supplier_cost
+                final_tier10 = max(supplier_cost, existing_tier10, proposed_tier10)
+
+                if final_tier10 > existing_tier10:
+                    tier10_action = "increased_from_proposed_multiplier"
+                elif existing_tier10 == supplier_cost and proposed_tier10 <= existing_tier10:
+                    tier10_action = "unchanged_at_supplier_cost_floor"
+                else:
+                    tier10_action = "unchanged_existing_tier10_higher_or_equal"
+                cost_rule = "Bulk price file update"
 
         result["NewSupplierCost"] = float(supplier_cost)
 
@@ -3460,6 +3482,9 @@ def main():
             print(f"  Update/Create: split unknown (no catalogue cache yet — the live GET decides per SKU)")
         print(f"  Update:        prices + supplier cost"
               + (f" + attributes ({attr_note}, {ATTRIBUTE_FILL_MODE})" if attr_cols else ""))
+        if HARD_RESET_PRICES:
+            print(f"  Tier anchor:   *** HARD RESET — Tier10 re-anchored from file cost x multiplier;")
+            print(f"                 the ratchet is OFF and selling tiers CAN DECREASE ***")
         if CREATE_MISSING:
             print(f"  Create new:    ON — type {NEW_PRODUCT_TYPE}, {NEW_PRODUCT_COSTING_METHOD}, "
                   f"UOM {NEW_PRODUCT_UOM}, location {NEW_PRODUCT_LOCATION}")
@@ -3470,6 +3495,9 @@ def main():
                   f"{format_money_for_note(COST_DECREASE_TOLERANCE)} (logged for review)")
         elif ALLOW_COST_DECREASES:
             print(f"  Cost guard:    OFF — --allow-decreases set, cost reductions WILL be applied")
+        else:
+            print(f"  Cost guard:    *** OFF — BLOCK_COST_DECREASES: False in Config.yaml;")
+            print(f"                 cost reductions WILL be applied without review ***")
         if retry_mode:
             print(f"  Retry:         only the {len(rows)} SKU(s) that failed last run")
         print(f"  Mode:          {'DRY RUN — preview only, no changes written' if DRY_RUN else 'LIVE — changes WILL be written'}")
@@ -3482,6 +3510,12 @@ def main():
             if not confirm_zap_paused():
                 print("  Cancelled — turn the Zap off and re-run. No changes made.")
                 return
+            if HARD_RESET_PRICES:
+                print(f"\n  HARD_RESET_PRICES is ON: selling tiers will be re-anchored from the")
+                print(f"  file cost and CAN MOVE DOWN. Type CONFIRM to accept, or Enter to cancel:")
+                if not confirm_typed():
+                    print("  Cancelled. No changes made.")
+                    return
             if not confirm_proceed(f"Apply these changes to {len(rows)} SKU(s) LIVE?"):
                 print("  Cancelled. No changes made.")
                 return

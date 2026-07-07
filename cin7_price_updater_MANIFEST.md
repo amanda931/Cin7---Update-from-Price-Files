@@ -122,9 +122,10 @@ simPRO base `https://mjryder.simprosuite.com`; supplier name `RHS Group Ltd`.
 - **Channel pricing decoupled** *(Jul 2026)* — `SIMPRO_PRICE_TIER`, `SHOPIFY_PRICE_TIER`, `SHOPIFY_COMPARE_AT_TIER`, `SHOPIFY_DISCOUNT_PERCENT` in Config.yaml (supersedes the planned `SIMPRO_SYNC_TIER`). Defaults reproduce the old coupled behaviour.
 - **Export mode** *(Jul 2026)* — `--export` / `EXPORT_MODE: True` writes Brand/Category-scoped products to `Export1.csv` in Cin7 Inventory List format (read-only). The whole catalogue is scanned with suppliers once, cached to `export_cache.json` (24h rule, `REFRESH_CATALOGUE` forces), and filtered locally — switching brands between exports costs no API calls. Headers copied from `Cin7Template.csv` when present, else a built-in Cin7 Core set.
 
+- **`HARD_RESET_PRICES`** *(Jul 2026)* — file-mode switch that bypasses the Tier10 ratchet: Tier10 = max(file cost, cost × multiplier ÷ 2), so selling tiers can DECREASE. Typed CONFIRM on live runs; cost decreases still gated by `BLOCK_COST_DECREASES` / `--allow-decreases`.
+
 **Designed but NOT built** (do not assume these exist in code)
 - Channel-aware `ALIGN_MODE` — full-catalogue re-sync of one channel (simPRO *or* Shopify) to its tier, with bulk-read + skip-if-unchanged + resumable checkpoint. *Currently shelved as disproportionate.*
-- `HARD_RESET_PRICES` switch.
 
 **Open questions**
 - Which simPRO field is MJ Ryder's true cost (catalogue trade price vs RHS vendor nett price) — decides one-vs-two writes per record.

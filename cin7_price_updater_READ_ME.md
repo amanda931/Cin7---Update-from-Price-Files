@@ -146,6 +146,7 @@ python cin7_price_updater.py --reactivate deprecate_undo_20260620_180203.csv
 The same formulas across every mode:
 
 - **Tier 10** = new cost × multiplier ÷ 2 (multiplier floored at 2). In price-file mode the final Tier 10 is the **highest** of {new cost, existing Tier 10, proposed} — the ratchet. Uplift mode sets it directly from the uplifted anchor instead.
+- **`HARD_RESET_PRICES: True`** (file mode only) bypasses the ratchet: Tier 10 = max(new cost, proposed), so selling tiers **can decrease** — the only path that lowers prices. Live runs demand a typed CONFIRM; cost decreases are still held by `BLOCK_COST_DECREASES` unless `--allow-decreases` is passed.
 - **Tiers 6–9** — a margin ladder above Tier 10 at 40 / 30 / 20 / 10%.
 - **Tiers 1–5** — roughly double Tier 10 with small uplifts (1 / 2 / 3 / 5 / 7.5%).
 - **simPRO price** — `SIMPRO_PRICE_TIER` (default Tier 4) with at least a 40% discount applied (the product's DiscountRule still applies when deeper than 40%).
